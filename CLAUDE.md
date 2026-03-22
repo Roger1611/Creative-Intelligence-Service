@@ -50,7 +50,7 @@ config.py         → Central config, loads .env, initializes DB on first run
 | feedback/performance_parser.py | ✅ Done | Meta CSV parser; 3-strategy ad matching; fuzzy concept linking; CLI --file --brand |
 | feedback/loop.py | ✅ Done | Angle/hook/format analysis; winning patterns text; ROAS-weighted next-batch weights; CLI --category/--brand |
 | pipeline.py | ✅ Done | audit, sprint, batch-audit, refresh modes; --dry-run; tqdm progress; RunTracker summary |
-| tests/ | 🔨 Needs rewrite | |
+| tests/ | ✅ Done | 78 tests: structurer dedup+diversity, fatigue scorer edge cases, profitability filter, prompt formatting |
 
 ## Commands
 
