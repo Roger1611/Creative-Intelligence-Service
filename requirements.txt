@@ -7,3 +7,4 @@ python-dotenv
 Pillow
 reportlab
 jinja2
+tqdm

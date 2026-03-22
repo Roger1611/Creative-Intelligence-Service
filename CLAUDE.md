@@ -49,7 +49,7 @@ config.py         → Central config, loads .env, initializes DB on first run
 | deliverables/sprint_generator.py | ✅ Done | Full sprint PDF+JSON: exec summary, competitor intel, 50+ concepts by angle, creative calendar; CLI --brand --batch --output |
 | feedback/performance_parser.py | 🔨 Needs rewrite | Parses Meta Ads Manager CSV; resolves ad_library_id FK |
 | feedback/loop.py | 🔨 Needs rewrite | ROAS-weighted angle scoring; next-batch concept weights |
-| pipeline.py | 🔨 Needs rewrite | audit, sprint, batch-audit, refresh modes |
+| pipeline.py | ✅ Done | audit, sprint, batch-audit, refresh modes; --dry-run; tqdm progress; RunTracker summary |
 | tests/ | 🔨 Needs rewrite | |
 
 ## Commands
