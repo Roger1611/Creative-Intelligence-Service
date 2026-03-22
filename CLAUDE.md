@@ -47,8 +47,8 @@ config.py         → Central config, loads .env, initializes DB on first run
 | llm/chains.py | ✅ Done | chain_competitor_analysis, chain_waste_diagnosis, chain_concept_generation, chain_full; DB + JSON output |
 | deliverables/audit_generator.py | ✅ Done | 3-page PDF: cover+snapshot, competitor comparison, sample hooks+CTA; CLI --brand --output |
 | deliverables/sprint_generator.py | ✅ Done | Full sprint PDF+JSON: exec summary, competitor intel, 50+ concepts by angle, creative calendar; CLI --brand --batch --output |
-| feedback/performance_parser.py | 🔨 Needs rewrite | Parses Meta Ads Manager CSV; resolves ad_library_id FK |
-| feedback/loop.py | 🔨 Needs rewrite | ROAS-weighted angle scoring; next-batch concept weights |
+| feedback/performance_parser.py | ✅ Done | Meta CSV parser; 3-strategy ad matching; fuzzy concept linking; CLI --file --brand |
+| feedback/loop.py | ✅ Done | Angle/hook/format analysis; winning patterns text; ROAS-weighted next-batch weights; CLI --category/--brand |
 | pipeline.py | ✅ Done | audit, sprint, batch-audit, refresh modes; --dry-run; tqdm progress; RunTracker summary |
 | tests/ | 🔨 Needs rewrite | |
 
