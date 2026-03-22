@@ -45,8 +45,8 @@ config.py         → Central config, loads .env, initializes DB on first run
 | llm/client.py | ✅ Done | analyze_ad, generate_text, batch_analyze; retries + fallback; cost logging |
 | llm/prompts/*.txt | ✅ Done | competitor_deconstruction, waste_diagnosis, concept_generation |
 | llm/chains.py | ✅ Done | chain_competitor_analysis, chain_waste_diagnosis, chain_concept_generation, chain_full; DB + JSON output |
-| deliverables/audit_generator.py | 🔨 Needs rewrite | ReportLab PDF: score card, fatigue flags, recommendations, summary |
-| deliverables/sprint_generator.py | 🔨 Needs rewrite | ReportLab PDF + JSON dump; one section per concept |
+| deliverables/audit_generator.py | ✅ Done | 3-page PDF: cover+snapshot, competitor comparison, sample hooks+CTA; CLI --brand --output |
+| deliverables/sprint_generator.py | ✅ Done | Full sprint PDF+JSON: exec summary, competitor intel, 50+ concepts by angle, creative calendar; CLI --brand --batch --output |
 | feedback/performance_parser.py | 🔨 Needs rewrite | Parses Meta Ads Manager CSV; resolves ad_library_id FK |
 | feedback/loop.py | 🔨 Needs rewrite | ROAS-weighted angle scoring; next-batch concept weights |
 | pipeline.py | 🔨 Needs rewrite | audit, sprint, batch-audit, refresh modes |
