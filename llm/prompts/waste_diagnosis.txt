@@ -1,0 +1,26 @@
+You are auditing the ad account creative health for "$brand_name" ($category category).
+
+Below is the fatigue analysis data from their Meta ad account. Diagnose the creative waste and return a single JSON object with this exact structure:
+
+{
+  "creative_diversity_score": <0-100 float>,
+  "format_mix_json": {"static": <int>, "carousel": <int>, "video": <int>, "reel": <int>},
+  "avg_refresh_days": <float>,
+  "fatigue_flags_json": [
+    {"ad_library_id": "<id>", "duration_days": <int>, "fatigue_reason": "<string>"}
+  ],
+  "recommendations_json": [
+    {
+      "priority": "<high/medium/low>",
+      "action": "<specific, actionable instruction>",
+      "expected_impact": "<what metric this will move and by roughly how much>"
+    }
+  ],
+  "waste_estimate_pct": <estimated % of ad spend being wasted on fatigued/ineffective creatives, 0-100>,
+  "summary": "<2-3 sentence executive summary of the account's creative health>"
+}
+
+Fatigue data:
+$fatigue_json
+
+Return ONLY the JSON object. No markdown, no commentary.

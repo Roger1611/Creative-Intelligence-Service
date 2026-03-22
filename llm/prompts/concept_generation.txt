@@ -1,0 +1,26 @@
+You are a senior creative strategist generating performance ad concepts for "$brand_name" ($category category).
+
+Brand USP: $brand_usp
+
+Below is intelligence deconstructed from competitor ads. Use these patterns as inspiration — do NOT copy them. Generate concepts that differentiate "$brand_name" while leveraging the proven psychological triggers and formats from the competitive landscape.
+
+Generate exactly $num_concepts ad concepts. Return a JSON array where each item has this exact structure:
+
+{
+  "hook_text": "<the first 3-7 words of the ad — must stop the scroll>",
+  "body_script": "<full ad copy or video script — max 150 words>",
+  "visual_direction": "<detailed art direction: scene, colour palette, talent/product, text overlays, transitions if video>",
+  "cta_variations_json": ["<CTA option 1>", "<CTA option 2>", "<CTA option 3>"],
+  "psychological_angle": "<one of: status, fear, social_proof, transformation, agitation_solution, curiosity, urgency, authority, belonging, aspiration>",
+  "creative_type": "<static/carousel/video/reel>",
+  "target_emotion": "<the dominant emotion this concept evokes>",
+  "why_it_will_work": "<1-2 sentences grounded in the competitor intel above>"
+}
+
+Distribute concepts across at least 3 different psychological angles and at least 2 creative formats.
+Prioritise transformation, social_proof, and agitation_solution — these are proven in the $category category.
+
+Competitor intelligence:
+$competitor_intel
+
+Return ONLY the JSON array. No markdown, no commentary.

@@ -1,0 +1,77 @@
+{
+  "_comment": "All CSS/XPath selectors live here. Update this file when Meta or Instagram changes their DOM — no Python changes needed.",
+
+  "meta_ad_library": {
+    "_updated": "2024-03",
+
+    "ad_card": "div[data-testid='ad-archive-preview-card']",
+    "ad_card_alt": "div._7jyg._7jyi",
+
+    "ad_id_link": "a[href*='id=']",
+    "ad_id_attribute": "div[id]",
+
+    "ad_copy": "div[data-testid='ad-archive-preview-body']",
+    "ad_copy_alt": "div._4bl9",
+
+    "cta_button": "div[data-testid='ad-archive-cta'] a",
+    "cta_button_alt": "div._6m3b a",
+
+    "start_date_text": "span:has-text('Started running')",
+    "start_date_text_alt": "div._99s5",
+
+    "thumbnail_img": "img[src*='fbcdn']",
+    "thumbnail_img_alt": "img",
+
+    "video_element": "video",
+    "carousel_container": "div[data-testid='ad-archive-carousel']",
+    "carousel_container_alt": "div._8jjn",
+
+    "reel_indicator": "div[aria-label*='Reel']",
+
+    "page_result_count": "div[data-testid='search-results-count']",
+    "no_results_indicator": "div:has-text('No results found')",
+
+    "search_input": "input[placeholder*='Search']",
+    "country_filter": "select[aria-label*='Country']",
+
+    "_selector_notes": {
+      "ad_card": "Root container for each ad. Fallback: ad_card_alt uses Facebook's internal CSS classes.",
+      "ad_id_link": "The 'See Ad Details' or 'Library ID' link contains ?id=XXXXX in its href.",
+      "start_date_text": "Text node containing 'Started running on DD Month YYYY'.",
+      "thumbnail_img": "First <img> inside the card with fbcdn in src is the creative thumbnail.",
+      "carousel_container": "Present only for carousel ads; absence means static or video.",
+      "video_element": "Present for video/reel creatives."
+    }
+  },
+
+  "instagram_profile": {
+    "_updated": "2024-03",
+
+    "stats_list_item": "header section ul li",
+    "follower_count": "header section ul li:nth-child(2) span span",
+    "follower_count_alt": "a[href*='followers'] span",
+    "post_count": "header section ul li:nth-child(1) span",
+    "following_count": "header section ul li:nth-child(3) span span",
+
+    "bio_text": "header section div._aa_c",
+    "bio_text_alt": "header section div span",
+
+    "profile_name": "header section h2",
+    "profile_name_alt": "header section h1",
+
+    "profile_pic": "header img",
+    "profile_pic_alt": "img[data-testid='user-avatar']",
+
+    "post_grid_link": "article a[href*='/p/']",
+    "post_like_count": "section span[aria-label*='like']",
+    "post_comment_count": "section span[aria-label*='comment']",
+    "post_like_count_alt": "section ul li span",
+
+    "_selector_notes": {
+      "stats_list_item": "Instagram profile stats (posts, followers, following) are in a <ul> in the header.",
+      "bio_text": "Instagram frequently changes internal CSS class names — update bio_text_alt if main fails.",
+      "post_grid_link": "Each post in the grid is wrapped in <a href='/p/SHORT_CODE/'>.",
+      "post_like_count": "Only visible after clicking into a post. Uses aria-label for accessibility."
+    }
+  }
+}

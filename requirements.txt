@@ -1,0 +1,9 @@
+playwright
+beautifulsoup4
+httpx
+anthropic
+openai
+python-dotenv
+Pillow
+reportlab
+jinja2
