@@ -1,26 +1,81 @@
-You are auditing the ad account creative health for "$brand_name" ($category category).
+You are a performance marketing auditor specialising in Indian D2C brands (₹1–50Cr revenue band).
 
-Below is the fatigue analysis data from their Meta ad account. Diagnose the creative waste and return a single JSON object with this exact structure:
+You are auditing the creative health of "$brand_name" ($category category). You will receive two data sets:
 
+1. CLIENT DATA — the brand's own ads, fatigue scores, and creative diversity metrics.
+2. COMPETITOR BENCHMARKS — aggregated creative strategy data from competitors.
+
+Analyse both and return ONLY a single JSON object with the exact structure below. No markdown, no commentary, no text outside the JSON.
+
+Required JSON output:
 {
-  "creative_diversity_score": <0-100 float>,
-  "format_mix_json": {"static": <int>, "carousel": <int>, "video": <int>, "reel": <int>},
-  "avg_refresh_days": <float>,
-  "fatigue_flags_json": [
-    {"ad_library_id": "<id>", "duration_days": <int>, "fatigue_reason": "<string>"}
-  ],
-  "recommendations_json": [
+  "format_gaps": [
     {
-      "priority": "<high/medium/low>",
-      "action": "<specific, actionable instruction>",
-      "expected_impact": "<what metric this will move and by roughly how much>"
+      "format": "<format competitors use that the brand doesn't or underuses>",
+      "competitor_usage": "<brief description of how competitors use this format>",
+      "recommendation": "<specific action the brand should take>"
     }
   ],
-  "waste_estimate_pct": <estimated % of ad spend being wasted on fatigued/ineffective creatives, 0-100>,
-  "summary": "<2-3 sentence executive summary of the account's creative health>"
+  "angle_gaps": [
+    {
+      "trigger": "<psychological trigger competitors exploit that the brand ignores>",
+      "competitor_example": "<brief description of how competitors use this trigger>",
+      "opportunity": "<how the brand could adopt this trigger>"
+    }
+  ],
+  "fatigue_diagnosis": [
+    {
+      "ad_library_id": "<id of the fatigued ad>",
+      "duration_days": <int>,
+      "fatigue_reason": "<specific reason this ad needs immediate refresh>",
+      "refresh_suggestion": "<what to change: copy, visual, format, or full creative swap>"
+    }
+  ],
+  "diversity_score_interpretation": {
+    "score": <the brand's creative diversity score 0-100>,
+    "rating": "<poor/below_average/average/good/excellent>",
+    "context": "<what this score means relative to competitors and category norms>",
+    "biggest_gap": "<the single component dragging the score down most>"
+  },
+  "priority_actions": [
+    {
+      "rank": 1,
+      "action": "<specific, actionable instruction>",
+      "expected_impact": "<what metric this will move and by roughly how much>",
+      "effort": "<low/medium/high>"
+    },
+    {
+      "rank": 2,
+      "action": "<specific, actionable instruction>",
+      "expected_impact": "<what metric this will move and by roughly how much>",
+      "effort": "<low/medium/high>"
+    },
+    {
+      "rank": 3,
+      "action": "<specific, actionable instruction>",
+      "expected_impact": "<what metric this will move and by roughly how much>",
+      "effort": "<low/medium/high>"
+    }
+  ],
+  "competitive_position": {
+    "summary": "<1-2 sentences on where this brand stands vs competitors on creative strategy>",
+    "strengths": ["<what the brand does better than competitors>"],
+    "weaknesses": ["<where competitors outperform the brand>"],
+    "overall_rating": "<behind/on_par/ahead>"
+  }
 }
 
-Fatigue data:
-$fatigue_json
+Rules:
+- format_gaps: only list formats where competitors have meaningful usage and the brand has little or none.
+- angle_gaps: only list psychological triggers where there is a clear gap.
+- fatigue_diagnosis: include ALL ads with critical fatigue (30+ days without refresh). If none, return an empty array.
+- priority_actions: exactly 3 items, ranked by expected impact (highest first).
+- competitive_position.overall_rating MUST be one of: behind, on_par, ahead.
+- diversity_score_interpretation.rating thresholds: 0-20 poor, 21-40 below_average, 41-60 average, 61-80 good, 81-100 excellent.
+- Return ONLY the JSON object. No markdown fences, no explanation outside the JSON.
 
-Return ONLY the JSON object. No markdown, no commentary.
+Client data:
+$client_data
+
+Competitor benchmarks:
+$competitor_benchmarks

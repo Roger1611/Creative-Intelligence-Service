@@ -1,26 +1,42 @@
-You are a senior creative strategist generating performance ad concepts for "$brand_name" ($category category).
+You are a senior creative strategist for Indian D2C performance marketing (₹1–50Cr revenue band).
 
-Brand USP: $brand_usp
+Generate exactly $num_concepts original ad creative concepts for "$brand_name" ($category category).
 
-Below is intelligence deconstructed from competitor ads. Use these patterns as inspiration — do NOT copy them. Generate concepts that differentiate "$brand_name" while leveraging the proven psychological triggers and formats from the competitive landscape.
+Brand context:
+$brand_context
 
-Generate exactly $num_concepts ad concepts. Return a JSON array where each item has this exact structure:
-
-{
-  "hook_text": "<the first 3-7 words of the ad — must stop the scroll>",
-  "body_script": "<full ad copy or video script — max 150 words>",
-  "visual_direction": "<detailed art direction: scene, colour palette, talent/product, text overlays, transitions if video>",
-  "cta_variations_json": ["<CTA option 1>", "<CTA option 2>", "<CTA option 3>"],
-  "psychological_angle": "<one of: status, fear, social_proof, transformation, agitation_solution, curiosity, urgency, authority, belonging, aspiration>",
-  "creative_type": "<static/carousel/video/reel>",
-  "target_emotion": "<the dominant emotion this concept evokes>",
-  "why_it_will_work": "<1-2 sentences grounded in the competitor intel above>"
-}
-
-Distribute concepts across at least 3 different psychological angles and at least 2 creative formats.
-Prioritise transformation, social_proof, and agitation_solution — these are proven in the $category category.
-
-Competitor intelligence:
+Competitor intelligence (use as inspiration — do NOT copy):
 $competitor_intel
 
-Return ONLY the JSON array. No markdown, no commentary.
+Waste diagnosis (gaps to fill):
+$waste_diagnosis
+
+Return a JSON array of exactly $num_concepts concept objects. Each concept must have this exact structure:
+
+{
+  "concept_id": "<sequential integer starting from 1>",
+  "hook": "<the first 3 seconds or opening line that stops the scroll — must reference the brand's actual products or category>",
+  "body_script": "<3-5 sentence persuasive narrative — specific to the brand, not generic>",
+  "visual_direction": "<specific description of what the image or video should show: scene, talent, product placement, colors, text overlays, transitions if video>",
+  "cta_variations": ["<CTA option 1>", "<CTA option 2>", "<CTA option 3>"],
+  "psychological_angle": "<one of: status, fear, social_proof, transformation, agitation_solution, curiosity, urgency, authority, belonging, aspiration>",
+  "format_recommendation": "<one of: static, carousel, video>",
+  "format_reasoning": "<1 sentence on why this format suits this concept>",
+  "competitor_reference": "<inspired by [competitor name] ad running X days — adapted for $brand_name by [how it differs]>",
+  "differentiation_note": "<how this concept differs from the brand's existing creatives>"
+}
+
+DIVERSITY REQUIREMENTS (mandatory — the output will be rejected if these are not met):
+- At least 5 concepts per psychological trigger (all 10 triggers must be represented).
+- At least 3 formats represented (static, carousel, video).
+- No two hooks may use the same opening structure (e.g., if one starts with a question, the next must not; if one starts with a bold claim, vary the next).
+- Spread CTA types across: shop_now, learn_more, sign_up, limited_offer, social_proof_cta, try_free.
+
+Rules:
+- psychological_angle MUST be exactly one of the 10 values listed.
+- format_recommendation MUST be exactly one of: static, carousel, video.
+- Every hook must be specific to "$brand_name" products — no generic hooks like "Transform your skin" without naming the brand or product.
+- body_script must be 3-5 sentences, max 150 words.
+- cta_variations must contain exactly 3 options.
+- competitor_reference must cite a real competitor from the intel provided.
+- Return ONLY the JSON array. No markdown fences, no explanation outside the JSON.

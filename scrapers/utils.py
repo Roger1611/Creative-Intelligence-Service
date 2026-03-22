@@ -1,11 +1,12 @@
 """
 scrapers/utils.py — Shared helpers: random delays, user-agent rotation,
-selector config loading, and image downloading.
+selector config loading, image downloading, and brand name sanitisation.
 """
 
 import json
 import logging
 import random
+import re
 import time
 from pathlib import Path
 
@@ -22,6 +23,26 @@ from config import (
 logger = logging.getLogger(__name__)
 
 _SELECTOR_CONFIG_PATH = ROOT_DIR / "scraper_config.json"
+
+
+def safe_brand_slug(name: str) -> str:
+    """
+    Convert a brand/competitor name into a filesystem-safe slug.
+
+    Lowercase, spaces to hyphens, strip all non-alphanumeric/hyphen characters,
+    collapse multiple hyphens, and trim leading/trailing hyphens.
+
+    Examples:
+        "Mamaearth"           → "mamaearth"
+        "WOW Skin Science"    → "wow-skin-science"
+        "Plum (Good Vibes!)"  → "plum-good-vibes"
+    """
+    slug = name.lower().strip()
+    slug = slug.replace(" ", "-")
+    slug = re.sub(r"[^a-z0-9\-]", "", slug)
+    slug = re.sub(r"-{2,}", "-", slug)
+    slug = slug.strip("-")
+    return slug or "unnamed"
 
 
 def random_delay() -> None:
