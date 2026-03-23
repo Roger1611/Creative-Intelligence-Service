@@ -75,8 +75,10 @@ def run(brand_name: str, competitor_names: list[str]) -> dict:
     Returns the structured dict.
     """
     all_names   = [brand_name] + list(competitor_names)
+    logger.debug("Fetching brands from DB: %s", all_names)
     brand_rows  = _fetch_brands(all_names)
     name_to_id  = {b["name"]: b["id"] for b in brand_rows}
+    logger.debug("Found brands in DB: %s", name_to_id)
 
     if brand_name not in name_to_id:
         raise ValueError(f"Brand '{brand_name}' not found in DB. Run ingest first.")
@@ -94,6 +96,8 @@ def run(brand_name: str, competitor_names: list[str]) -> dict:
             continue
 
         raw_ads   = _fetch_ads(brand_id)
+        logger.info("'%s' (brand_id=%d): fetched %d ads from DB",
+                     name, brand_id, len(raw_ads))
         clean_ads = _deduplicate(raw_ads)
         removed   = len(raw_ads) - len(clean_ads)
         if removed:
@@ -415,5 +419,70 @@ def _write_processed(brand_name: str, data: dict) -> Path:
     safe  = brand_name.lower().replace(" ", "_")
     path  = PROC_DIR / f"{safe}.json"
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    logger.info("Processed JSON → %s", path)
+    logger.info("Processed JSON -> %s", path)
     return path
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CLI
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _cli() -> None:
+    import argparse
+
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(asctime)s %(levelname)-8s %(name)s -- %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    parser = argparse.ArgumentParser(
+        prog="python -m analysis.structurer",
+        description="Read ads from DB, deduplicate, compute diversity score, "
+                    "write data/processed/{brand}.json.",
+    )
+    parser.add_argument("--brand", required=True, help="Primary brand name")
+    parser.add_argument("--competitors", default="",
+                        help="Comma-separated competitor brand names")
+    args = parser.parse_args()
+
+    competitors = [c.strip() for c in args.competitors.split(",") if c.strip()]
+
+    # If no competitors supplied, auto-detect from competitor_sets table
+    if not competitors:
+        logger.info("No --competitors given, checking competitor_sets table...")
+        with get_connection() as conn:
+            brand_row = conn.execute(
+                "SELECT id FROM brands WHERE name = ?", (args.brand,)
+            ).fetchone()
+            if brand_row:
+                comp_rows = conn.execute(
+                    "SELECT b.name FROM competitor_sets cs "
+                    "JOIN brands b ON b.id = cs.competitor_brand_id "
+                    "WHERE cs.client_brand_id = ?",
+                    (brand_row["id"],),
+                ).fetchall()
+                competitors = [r["name"] for r in comp_rows]
+                if competitors:
+                    logger.info("Auto-detected competitors: %s", competitors)
+                else:
+                    logger.info("No competitors found in DB -- running brand-only.")
+            else:
+                logger.error("Brand '%s' not found in DB. Run the scraper first.", args.brand)
+                return
+
+    logger.info("Running structurer for '%s' with competitors=%s", args.brand, competitors)
+    result = run(args.brand, competitors)
+
+    # Summary
+    for name, data in result["brands"].items():
+        print(f"  {name}: {data['total_ads']} ads, "
+              f"diversity={data['creative_diversity_score']}/100, "
+              f"dupes_removed={data['duplicates_removed']}")
+
+    safe = args.brand.lower().replace(" ", "_")
+    print(f"\nOutput: {PROC_DIR / safe}.json")
+
+
+if __name__ == "__main__":
+    _cli()

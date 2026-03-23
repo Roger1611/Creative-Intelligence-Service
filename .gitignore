@@ -17,3 +17,5 @@ data/*.db
 # Local config
 .env.local
 .env.example
+
+data/
