@@ -24,7 +24,7 @@ import time
 from datetime import datetime, date
 from pathlib import Path
 from typing import Optional
-from urllib.parse import quote_plus, urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs
 
 from config import RAW_DIR, get_connection, init_db
 from scrapers.utils import download_image, load_selectors, random_delay, random_user_agent
@@ -125,17 +125,16 @@ def _playwright_scrape(
     ads: list[dict] = []
     today_str = date.today().isoformat()
 
-    search_url = (
+    # Navigate to the base Ad Library page (no query — we'll use the autocomplete)
+    base_url = (
         "https://www.facebook.com/ads/library/"
         f"?active_status=active&ad_type=all"
         f"&country={country}"
-        f"&q={quote_plus(brand_name)}"
-        f"&search_type=keyword_unordered"
         f"&media_type=all"
     )
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+        browser = p.chromium.launch(headless=False, args=["--no-sandbox"])
         ctx = browser.new_context(
             user_agent=random_user_agent(),
             viewport={"width": 1280, "height": 900},
@@ -144,11 +143,19 @@ def _playwright_scrape(
         page = ctx.new_page()
 
         # Navigate with retry on timeout
-        _navigate(page, search_url)
+        _navigate(page, base_url)
         random_delay()
 
         # Dismiss cookie banner if present
         _dismiss_cookie_banner(page)
+
+        # Use the autocomplete search to find the advertiser page
+        _search_via_autocomplete(page, brand_name, selectors)
+
+        # Wait for ad results to load after advertiser selection
+        random_delay()
+        page.wait_for_load_state("networkidle", timeout=_NAV_TIMEOUT_MS)
+        time.sleep(2)  # Allow cards to render
 
         # Paginate by scrolling; each scroll that loads new cards = 1 page
         seen_ids: set[str] = set()
@@ -189,6 +196,324 @@ def _playwright_scrape(
 
     logger.info("Scrape complete for '%s': %d ads", brand_name, len(ads))
     return ads
+
+
+def _search_via_autocomplete(page, brand_name: str, selectors: dict) -> None:
+    """
+    Select the ad category, type the brand name into the search box, and select
+    the matching advertiser from the autocomplete dropdown.
+
+    Flow:
+    1. Select "All ads" from the ad category dropdown (required before search)
+    2. Find the now-active search input and type brand name char-by-char
+    3. Wait for the autocomplete listbox to appear
+    4. Scan advertiser entries (aria-describedby="pageID:...") for a match
+    5. Click the best matching advertiser
+    6. If none found, fall back to "Search this exact phrase" with a warning
+    """
+    from playwright.sync_api import TimeoutError as PWTimeout
+
+    debug_dir = Path("debug_output")
+    debug_dir.mkdir(exist_ok=True)
+
+    # ── Step 1: Select ad category ────────────────────────────────────────────
+    _select_ad_category(page, selectors)
+    page.screenshot(path=str(debug_dir / "step1_after_category.png"), full_page=False)
+    logger.info("DEBUG screenshot saved: step1_after_category.png")
+
+    # ── Step 2: Find the search input (now active after category selection) ───
+    search_input = _find_search_input(page, selectors)
+    if not search_input:
+        page.screenshot(path=str(debug_dir / "step2_no_input_found.png"), full_page=False)
+        raise RuntimeError("Could not find search input on Ad Library page")
+
+    # Click into the search box and type brand name slowly to trigger autocomplete
+    search_input.click()
+    time.sleep(0.5)
+    search_input.fill("")
+    time.sleep(0.3)
+
+    logger.info("Typing '%s' into search box to trigger autocomplete...", brand_name)
+    for char in brand_name:
+        search_input.type(char, delay=120)
+
+    page.screenshot(path=str(debug_dir / "step2_after_typing.png"), full_page=False)
+    logger.info("DEBUG screenshot saved: step2_after_typing.png")
+
+    # ── Step 3: Wait for autocomplete dropdown ────────────────────────────────
+    listbox_sel = selectors.get("autocomplete_listbox", "[role='listbox']")
+    try:
+        page.wait_for_selector(listbox_sel, timeout=8_000, state="visible")
+    except PWTimeout:
+        logger.warning(
+            "Autocomplete dropdown did not appear for '%s'. "
+            "Pressing Enter to do keyword search as fallback.",
+            brand_name,
+        )
+        search_input.press("Enter")
+        return
+
+    time.sleep(1.5)  # Let the full advertiser list populate
+
+    page.screenshot(path=str(debug_dir / "step3_dropdown_visible.png"), full_page=False)
+    logger.info("DEBUG screenshot saved: step3_dropdown_visible.png")
+
+    # ── Step 4: Find and click the best advertiser match ──────────────────────
+    advertiser_sel = selectors.get(
+        "autocomplete_advertiser_entry", "[aria-describedby^='pageID:']"
+    )
+    advertisers = page.query_selector_all(advertiser_sel)
+    logger.info("Found %d advertiser entries in autocomplete dropdown", len(advertisers))
+
+    if advertisers:
+        best_match = _pick_best_advertiser(advertisers, brand_name)
+        if best_match:
+            try:
+                adv_text = best_match.inner_text().replace("\n", " ").strip()
+                logger.info("Clicking advertiser: %s", adv_text[:120])
+            except Exception:
+                logger.info("Clicking matched advertiser entry")
+            best_match.click()
+            return
+
+    # ── Fallback: click "Search this exact phrase" ────────────────────────────
+    logger.warning(
+        "No matching advertiser found for '%s' in autocomplete dropdown. "
+        "Falling back to exact phrase keyword search — results may include "
+        "unrelated brands.",
+        brand_name,
+    )
+    exact_sel = selectors.get(
+        "autocomplete_exact_phrase", "[aria-label*='Search for exact phrase']"
+    )
+    exact_btn = page.query_selector(exact_sel)
+    if exact_btn:
+        exact_btn.click()
+    else:
+        # Last resort: just press Enter
+        logger.warning("Could not find exact phrase button either. Pressing Enter.")
+        search_input.press("Enter")
+
+
+def _select_ad_category(page, selectors: dict) -> None:
+    """
+    Select "All ads" from the ad category dropdown.
+
+    The Meta Ad Library page loads with the search input disabled until an ad
+    category is chosen. The category dropdown is a ``role="combobox"`` element.
+    When ``ad_type=all`` is in the URL the category may already be pre-selected;
+    we verify and select it if not.
+    """
+    from playwright.sync_api import TimeoutError as PWTimeout
+
+    # Check if the search input is already active (category pre-selected via URL)
+    search_sel = selectors.get("search_input", "input[placeholder*='Search']")
+    try:
+        inp = page.wait_for_selector(
+            f"{search_sel}:not([disabled])", timeout=5_000, state="visible"
+        )
+        if inp:
+            logger.info("Search input already active — category pre-selected via URL.")
+            return
+    except PWTimeout:
+        pass
+
+    # Also try type="search" directly
+    try:
+        inp = page.wait_for_selector(
+            "input[type='search']:not([disabled])", timeout=3_000, state="visible"
+        )
+        if inp:
+            logger.info("Search input (type=search) already active.")
+            return
+    except PWTimeout:
+        pass
+
+    logger.info("Search input not yet active — selecting ad category...")
+
+    # Find the category dropdown. It's the second role="combobox" on the page
+    # (first is the country selector). We identify it by looking for the one
+    # near text like "Ad category" / "Select ad category" / "All ads".
+    category_sel = selectors.get("category_dropdown", "[role='combobox']")
+    comboboxes = page.query_selector_all(category_sel)
+
+    category_combo = None
+    for combo in comboboxes:
+        try:
+            # Check the text around/inside this combobox
+            parent_text = combo.evaluate(
+                "el => el.closest('div')?.parentElement?.innerText?.slice(0, 200) || ''"
+            )
+            if any(kw in parent_text.lower() for kw in
+                   ["category", "all ads", "ad category", "select ad"]):
+                category_combo = combo
+                break
+        except Exception:
+            continue
+
+    # Fallback: if only 2 comboboxes, the second one is the category
+    if not category_combo and len(comboboxes) >= 2:
+        category_combo = comboboxes[1]
+        logger.debug("Using second combobox as category dropdown (fallback).")
+
+    if not category_combo:
+        logger.warning(
+            "Could not find category dropdown. "
+            "Proceeding anyway — search input may or may not be active."
+        )
+        return
+
+    # Click the category dropdown to open it
+    category_combo.click()
+    time.sleep(1)
+
+    # Look for "All ads" option in the dropdown
+    all_ads_option = page.query_selector(
+        selectors.get("category_all_ads", "li[role='option']:has-text('All ads')")
+    )
+    if not all_ads_option:
+        # Try broader selectors
+        for sel in [
+            "[role='option']:has-text('All ads')",
+            "[role='option']:has-text('All')",
+            "div:has-text('All ads') >> visible=true",
+        ]:
+            all_ads_option = page.query_selector(sel)
+            if all_ads_option:
+                break
+
+    if all_ads_option:
+        all_ads_option.click()
+        logger.info("Selected 'All ads' from category dropdown.")
+        time.sleep(1.5)  # Wait for the search input to become active
+    else:
+        logger.warning(
+            "Could not find 'All ads' option. Trying to press first option."
+        )
+        # Press down arrow + Enter as fallback
+        category_combo.press("ArrowDown")
+        time.sleep(0.3)
+        category_combo.press("Enter")
+        time.sleep(1.5)
+
+
+def _find_search_input(page, selectors: dict):
+    """Locate the visible search input on the Ad Library page.
+
+    Waits up to 15s for the search input to appear — Meta's Ad Library is
+    JS-heavy and the search box can take a few seconds to render after
+    category selection.
+    """
+    from playwright.sync_api import TimeoutError as PWTimeout
+
+    # Primary: input[type='search'] — the actual search box
+    for sel in [
+        "input[type='search']",
+        selectors.get("search_input", "input[placeholder*='Search']"),
+        "input[placeholder*='keyword']",
+        "input[placeholder*='advertiser']",
+    ]:
+        try:
+            page.wait_for_selector(sel, timeout=10_000, state="visible")
+            inp = page.query_selector(sel)
+            if inp and inp.is_visible():
+                logger.debug("Found search input via: %s", sel)
+                return inp
+        except PWTimeout:
+            continue
+
+    # Last fallback: scan all inputs
+    all_inputs = page.query_selector_all("input")
+    for inp in all_inputs:
+        try:
+            ph = (inp.get_attribute("placeholder") or "").lower()
+            typ = (inp.get_attribute("type") or "").lower()
+            if inp.is_visible() and (
+                typ == "search"
+                or ("search" in ph and "country" not in ph)
+                or "keyword" in ph
+                or "advertiser" in ph
+            ):
+                logger.debug("Found search input via input scan: placeholder='%s'", ph)
+                return inp
+        except Exception:
+            continue
+
+    return None
+
+
+def _pick_best_advertiser(advertisers: list, brand_name: str):
+    """
+    From a list of advertiser elements, pick the one that best matches the
+    brand name. Preference order:
+    1. Exact name match (case-insensitive) with highest follower count
+    2. Name starts with the brand name
+    3. First advertiser entry (closest match by Meta's ranking)
+
+    Returns the best matching element, or None if the list is empty.
+    """
+    brand_lower = brand_name.lower().strip()
+
+    scored: list[tuple[int, int, object]] = []
+    for adv in advertisers:
+        try:
+            text = adv.inner_text().strip()
+        except Exception:
+            continue
+
+        lines = [l.strip() for l in text.split("\n") if l.strip()]
+        if not lines:
+            continue
+
+        adv_name = lines[0].lower().strip()
+        follower_count = _parse_follower_count(text)
+
+        # Score: higher is better
+        if adv_name == brand_lower:
+            score = 100  # Exact match
+        elif adv_name.startswith(brand_lower):
+            score = 80
+        elif brand_lower in adv_name:
+            score = 60
+        else:
+            score = 10  # Meta ranked it, some relevance
+
+        scored.append((score, follower_count, adv))
+
+    if not scored:
+        return None
+
+    # Sort by score descending, then follower count descending
+    scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+
+    best_score, best_followers, best_el = scored[0]
+    logger.debug(
+        "Best advertiser match: score=%d, followers=%d", best_score, best_followers
+    )
+    return best_el
+
+
+def _parse_follower_count(text: str) -> int:
+    """Parse follower count from advertiser entry text like '232.4K follow this'."""
+    m = re.search(r"([\d,.]+)\s*[Kk]\s*follow", text)
+    if m:
+        try:
+            return int(float(m.group(1).replace(",", "")) * 1_000)
+        except ValueError:
+            pass
+    m = re.search(r"([\d,.]+)\s*[Mm]\s*follow", text)
+    if m:
+        try:
+            return int(float(m.group(1).replace(",", "")) * 1_000_000)
+        except ValueError:
+            pass
+    m = re.search(r"([\d,]+)\s*follow", text)
+    if m:
+        try:
+            return int(m.group(1).replace(",", ""))
+        except ValueError:
+            pass
+    return 0
 
 
 # ── Navigation helpers ─────────────────────────────────────────────────────────

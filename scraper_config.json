@@ -34,13 +34,22 @@
     "search_input": "input[placeholder*='Search']",
     "country_filter": "select[aria-label*='Country']",
 
+    "autocomplete_listbox": "[role='listbox']",
+    "autocomplete_option": "li[role='option']",
+    "autocomplete_exact_phrase": "[aria-label*='Search for exact phrase']",
+    "autocomplete_advertisers_heading": "[role='heading']:has-text('Advertisers')",
+    "autocomplete_advertiser_entry": "[aria-describedby^='pageID:']",
+
     "_selector_notes": {
       "ad_card": "Root container for each ad. Fallback: ad_card_alt uses Facebook's internal CSS classes.",
       "ad_id_link": "The 'See Ad Details' or 'Library ID' link contains ?id=XXXXX in its href.",
       "start_date_text": "Text node containing 'Started running on DD Month YYYY'.",
       "thumbnail_img": "First <img> inside the card with fbcdn in src is the creative thumbnail.",
       "carousel_container": "Present only for carousel ads; absence means static or video.",
-      "video_element": "Present for video/reel creatives."
+      "video_element": "Present for video/reel creatives.",
+      "autocomplete_listbox": "Dropdown that appears after typing in search. Contains 'exact phrase' option + advertiser entries.",
+      "autocomplete_advertiser_entry": "Each advertiser in the dropdown has aria-describedby='pageID:XXXXX'. Click the matching one to load only that brand's ads.",
+      "autocomplete_exact_phrase": "The keyword search fallback — only click this if no advertiser match is found."
     }
   },
 
