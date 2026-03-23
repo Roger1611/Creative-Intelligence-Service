@@ -423,5 +423,81 @@ def _write_processed(brand_name: str, data: dict) -> Path:
     safe = brand_name.lower().replace(" ", "_")
     path = PROC_DIR / f"{safe}_category_intelligence.json"
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    logger.info("Category intelligence → %s", path)
+    logger.info("Category intelligence -> %s", path)
     return path
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CLI
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _cli() -> None:
+    import argparse
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)-8s %(name)s -- %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    parser = argparse.ArgumentParser(
+        prog="python -m analysis.category_intel",
+        description="Build category-level creative intelligence across a competitor set.",
+    )
+    parser.add_argument("--brand", required=True, help="Client brand name")
+    parser.add_argument("--competitors", default="",
+                        help="Comma-separated competitor names (auto-detected if omitted)")
+    args = parser.parse_args()
+
+    competitors = [c.strip() for c in args.competitors.split(",") if c.strip()]
+
+    if not competitors:
+        with get_connection() as conn:
+            brand_row = conn.execute(
+                "SELECT id FROM brands WHERE name = ?", (args.brand,)
+            ).fetchone()
+            if brand_row:
+                comp_rows = conn.execute(
+                    "SELECT b.name FROM competitor_sets cs "
+                    "JOIN brands b ON b.id = cs.competitor_brand_id "
+                    "WHERE cs.client_brand_id = ?",
+                    (brand_row["id"],),
+                ).fetchall()
+                competitors = [r["name"] for r in comp_rows]
+                if competitors:
+                    logger.info("Auto-detected competitors: %s", competitors)
+
+    result = run(args.brand, competitors)
+
+    print(f"\n  Universe: {result['total_ads_in_universe']} ads, "
+          f"{result['profitable_ads_in_universe']} profitable "
+          f"({result['profitable_rate']}%)")
+
+    print(f"\n  Per-brand:")
+    for name, s in result["per_brand_summary"].items():
+        print(f"    {name}: {s['total_ads']} ads, "
+              f"{s['profitable_ads']} winners ({s['win_rate']}%)")
+
+    fa = result["format_analysis"]
+    print(f"\n  Format win rates:")
+    for fmt, fdata in fa.items():
+        if fdata["total_count"] > 0:
+            print(f"    {fmt}: {fdata['win_rate']}% win rate "
+                  f"({fdata['winner_count']}/{fdata['total_count']})")
+
+    if result["patterns"]:
+        print(f"\n  Patterns:")
+        for p in result["patterns"]:
+            print(f"    - {p}")
+
+    if result["opportunities"]:
+        print(f"\n  Opportunities:")
+        for o in result["opportunities"]:
+            print(f"    - {o}")
+
+    safe = args.brand.lower().replace(" ", "_")
+    print(f"\nOutput: {PROC_DIR / safe}_category_intelligence.json")
+
+
+if __name__ == "__main__":
+    _cli()
