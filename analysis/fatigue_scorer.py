@@ -405,5 +405,74 @@ def _write_processed(brand_name: str, data: dict) -> Path:
     safe = brand_name.lower().replace(" ", "_")
     path = PROC_DIR / f"{safe}_fatigue.json"
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    logger.info("Fatigue report → %s", path)
+    logger.info("Fatigue report -> %s", path)
     return path
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CLI
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _cli() -> None:
+    import argparse
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)-8s %(name)s -- %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    parser = argparse.ArgumentParser(
+        prog="python -m analysis.fatigue_scorer",
+        description="Compute creative fatigue score for a brand, benchmarked against competitors.",
+    )
+    parser.add_argument("--brand", required=True, help="Client brand name")
+    parser.add_argument("--competitors", default="",
+                        help="Comma-separated competitor names (auto-detected if omitted)")
+    args = parser.parse_args()
+
+    competitors = [c.strip() for c in args.competitors.split(",") if c.strip()]
+
+    if not competitors:
+        with get_connection() as conn:
+            brand_row = conn.execute(
+                "SELECT id FROM brands WHERE name = ?", (args.brand,)
+            ).fetchone()
+            if brand_row:
+                comp_rows = conn.execute(
+                    "SELECT b.name FROM competitor_sets cs "
+                    "JOIN brands b ON b.id = cs.competitor_brand_id "
+                    "WHERE cs.client_brand_id = ?",
+                    (brand_row["id"],),
+                ).fetchall()
+                competitors = [r["name"] for r in comp_rows]
+                if competitors:
+                    logger.info("Auto-detected competitors: %s", competitors)
+
+    result = run(args.brand, competitors)
+
+    score = result["fatigue_score"]
+    interp = result["score_interpretation"]
+    print(f"\n  Fatigue score: {score}/100 ({interp})")
+    print(f"  Active ads: {result['client_ad_count']} "
+          f"(competitor avg: {result['competitor_avg_ad_count']})")
+    print(f"  Critical ads (30+ days): {len(result['critical_ads'])}")
+    print(f"  Warning ads (14-29 days): {len(result['warning_ads'])}")
+
+    bd = result["score_breakdown"]
+    print(f"\n  Breakdown:")
+    for k, v in bd.items():
+        print(f"    {k}: {v}")
+
+    if result["recommendations"]:
+        print(f"\n  Recommendations:")
+        for r in result["recommendations"]:
+            print(f"    [{r['priority'].upper()}] {r['signal']}")
+            print(f"      -> {r['action']}")
+
+    safe = args.brand.lower().replace(" ", "_")
+    print(f"\nOutput: {PROC_DIR / safe}_fatigue.json")
+
+
+if __name__ == "__main__":
+    _cli()

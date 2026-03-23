@@ -228,5 +228,64 @@ def _write_summary(brand_name: str, data: dict) -> Path:
     safe = brand_name.lower().replace(" ", "_")
     path = PROC_DIR / f"{safe}_profitable_ads_summary.json"
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    logger.info("Profitable ads summary → %s", path)
+    logger.info("Profitable ads summary -> %s", path)
     return path
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CLI
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _cli() -> None:
+    import argparse
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)-8s %(name)s -- %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    parser = argparse.ArgumentParser(
+        prog="python -m analysis.profitability_filter",
+        description="Flag profitable ads (21+ day run) and produce ranked winner list.",
+    )
+    parser.add_argument("--brand", required=True, help="Client brand name")
+    parser.add_argument("--competitors", default="",
+                        help="Comma-separated competitor names (auto-detected if omitted)")
+    args = parser.parse_args()
+
+    competitors = [c.strip() for c in args.competitors.split(",") if c.strip()]
+
+    if not competitors:
+        with get_connection() as conn:
+            brand_row = conn.execute(
+                "SELECT id FROM brands WHERE name = ?", (args.brand,)
+            ).fetchone()
+            if brand_row:
+                comp_rows = conn.execute(
+                    "SELECT b.name FROM competitor_sets cs "
+                    "JOIN brands b ON b.id = cs.competitor_brand_id "
+                    "WHERE cs.client_brand_id = ?",
+                    (brand_row["id"],),
+                ).fetchall()
+                competitors = [r["name"] for r in comp_rows]
+                if competitors:
+                    logger.info("Auto-detected competitors: %s", competitors)
+
+    result = run(args.brand, competitors)
+
+    for name, bdata in result["brands"].items():
+        print(f"  {name}: {bdata['profitable_ads']}/{bdata['total_ads']} profitable "
+              f"({bdata['profitable_pct']}%)")
+
+    cp = result.get("cross_competitor_patterns", {})
+    if cp:
+        print(f"\n  Cross-competitor: {cp.get('total_winners_across_competitors', 0)} winners, "
+              f"avg duration {cp.get('avg_winner_duration_days', 0)} days")
+
+    safe = args.brand.lower().replace(" ", "_")
+    print(f"\nOutput: {PROC_DIR / safe}_profitable_ads_summary.json")
+
+
+if __name__ == "__main__":
+    _cli()
