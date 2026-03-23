@@ -300,145 +300,235 @@ def _select_ad_category(page, selectors: dict) -> None:
     Select "All ads" from the ad category dropdown.
 
     The Meta Ad Library page loads with the search input disabled until an ad
-    category is chosen. The category dropdown is a ``role="combobox"`` element.
-    When ``ad_type=all`` is in the URL the category may already be pre-selected;
-    we verify and select it if not.
+    category is chosen. We try multiple strategies to find and click the
+    category dropdown, then select "All ads".
     """
     from playwright.sync_api import TimeoutError as PWTimeout
 
+    debug_dir = Path("debug_output")
+    debug_dir.mkdir(exist_ok=True)
+
     # Check if the search input is already active (category pre-selected via URL)
     search_sel = selectors.get("search_input", "input[placeholder*='Search']")
-    try:
-        inp = page.wait_for_selector(
-            f"{search_sel}:not([disabled])", timeout=5_000, state="visible"
-        )
-        if inp:
-            logger.info("Search input already active — category pre-selected via URL.")
-            return
-    except PWTimeout:
-        pass
-
-    # Also try type="search" directly
-    try:
-        inp = page.wait_for_selector(
-            "input[type='search']:not([disabled])", timeout=3_000, state="visible"
-        )
-        if inp:
-            logger.info("Search input (type=search) already active.")
-            return
-    except PWTimeout:
-        pass
+    for check_sel in [
+        f"{search_sel}:not([disabled])",
+        "input[type='search']:not([disabled])",
+    ]:
+        try:
+            inp = page.wait_for_selector(check_sel, timeout=3_000, state="visible")
+            if inp and inp.is_enabled():
+                logger.info("Search input already active — category pre-selected.")
+                return
+        except PWTimeout:
+            continue
 
     logger.info("Search input not yet active — selecting ad category...")
+    page.screenshot(path=str(debug_dir / "cat_step0_before_select.png"), full_page=False)
 
-    # Find the category dropdown. It's the second role="combobox" on the page
-    # (first is the country selector). We identify it by looking for the one
-    # near text like "Ad category" / "Select ad category" / "All ads".
-    category_sel = selectors.get("category_dropdown", "[role='combobox']")
-    comboboxes = page.query_selector_all(category_sel)
-
+    # ── Strategy 1: Find the category dropdown by label/text association ───────
+    # Look for elements containing "Ad category" text and find a clickable
+    # sibling or child that acts as the dropdown trigger.
     category_combo = None
-    for combo in comboboxes:
+
+    # Try: any element whose accessible name or label mentions "category"
+    for sel in [
+        "[aria-label*='category' i]",
+        "[aria-label*='Ad category' i]",
+        "label:has-text('Ad category')",
+    ]:
+        el = page.query_selector(sel)
+        if el:
+            category_combo = el
+            logger.debug("Found category element via: %s", sel)
+            break
+
+    # Try: role="combobox" elements — identify by surrounding text
+    if not category_combo:
+        comboboxes = page.query_selector_all("[role='combobox']")
+        logger.debug("Found %d combobox elements on page", len(comboboxes))
+        for combo in comboboxes:
+            try:
+                # Check the text content and surrounding context
+                combo_text = combo.evaluate("""el => {
+                    let text = el.innerText || el.textContent || '';
+                    let parent = el.closest('div')?.parentElement;
+                    if (parent) text += ' ' + (parent.innerText || '').slice(0, 300);
+                    return text.toLowerCase();
+                }""")
+                if any(kw in combo_text for kw in
+                       ["category", "ad category", "choose an ad"]):
+                    category_combo = combo
+                    logger.debug("Found category combobox via parent text match.")
+                    break
+            except Exception:
+                continue
+
+        # Fallback: second combobox (first is usually country)
+        if not category_combo and len(comboboxes) >= 2:
+            category_combo = comboboxes[1]
+            logger.debug("Using second combobox as category dropdown (positional).")
+
+    # Try: look for a div/span with "Ad category" or "Choose an ad category"
+    # text and click it directly (some Meta layouts render custom dropdowns)
+    if not category_combo:
+        for sel in [
+            "div:has-text('Ad category') >> visible=true",
+            "span:has-text('Ad category') >> visible=true",
+            "div:has-text('Choose an ad category') >> visible=true",
+        ]:
+            try:
+                el = page.query_selector(sel)
+                if el and el.is_visible():
+                    category_combo = el
+                    logger.debug("Found category element via text: %s", sel)
+                    break
+            except Exception:
+                continue
+
+    if not category_combo:
+        page.screenshot(path=str(debug_dir / "cat_FAIL_no_dropdown.png"), full_page=False)
+        logger.warning(
+            "Could not find category dropdown. Screenshot saved. "
+            "Proceeding anyway — search input may not be active."
+        )
+        return
+
+    # ── Click the category dropdown to open it ─────────────────────────────────
+    logger.info("Clicking category dropdown...")
+    category_combo.scroll_into_view_if_needed()
+    category_combo.click()
+    time.sleep(1.5)
+
+    page.screenshot(path=str(debug_dir / "cat_step1_dropdown_open.png"), full_page=False)
+    logger.info("DEBUG screenshot: cat_step1_dropdown_open.png")
+
+    # ── Select "All ads" from the dropdown options ─────────────────────────────
+    all_ads_option = None
+
+    # Try multiple selectors for the "All ads" option
+    for sel in [
+        selectors.get("category_all_ads", "li[role='option']:has-text('All ads')"),
+        "[role='option']:has-text('All ads')",
+        "[role='option'] >> text='All ads'",
+        "li:has-text('All ads') >> visible=true",
+        "div[role='option']:has-text('All ads')",
+        "span:has-text('All ads') >> visible=true",
+    ]:
         try:
-            # Check the text around/inside this combobox
-            parent_text = combo.evaluate(
-                "el => el.closest('div')?.parentElement?.innerText?.slice(0, 200) || ''"
-            )
-            if any(kw in parent_text.lower() for kw in
-                   ["category", "all ads", "ad category", "select ad"]):
-                category_combo = combo
+            el = page.query_selector(sel)
+            if el and el.is_visible():
+                all_ads_option = el
+                logger.debug("Found 'All ads' option via: %s", sel)
                 break
         except Exception:
             continue
 
-    # Fallback: if only 2 comboboxes, the second one is the category
-    if not category_combo and len(comboboxes) >= 2:
-        category_combo = comboboxes[1]
-        logger.debug("Using second combobox as category dropdown (fallback).")
-
-    if not category_combo:
-        logger.warning(
-            "Could not find category dropdown. "
-            "Proceeding anyway — search input may or may not be active."
-        )
-        return
-
-    # Click the category dropdown to open it
-    category_combo.click()
-    time.sleep(1)
-
-    # Look for "All ads" option in the dropdown
-    all_ads_option = page.query_selector(
-        selectors.get("category_all_ads", "li[role='option']:has-text('All ads')")
-    )
+    # Fallback: scan all role='option' elements for text containing "All ads"
     if not all_ads_option:
-        # Try broader selectors
-        for sel in [
-            "[role='option']:has-text('All ads')",
-            "[role='option']:has-text('All')",
-            "div:has-text('All ads') >> visible=true",
-        ]:
-            all_ads_option = page.query_selector(sel)
-            if all_ads_option:
-                break
+        options = page.query_selector_all("[role='option']")
+        logger.debug("Scanning %d role='option' elements for 'All ads'", len(options))
+        for opt in options:
+            try:
+                text = opt.inner_text().strip().lower()
+                if "all ads" in text:
+                    all_ads_option = opt
+                    break
+            except Exception:
+                continue
 
     if all_ads_option:
         all_ads_option.click()
         logger.info("Selected 'All ads' from category dropdown.")
-        time.sleep(1.5)  # Wait for the search input to become active
+        time.sleep(2)  # Wait for the search input to become active
     else:
+        page.screenshot(path=str(debug_dir / "cat_FAIL_no_all_ads.png"), full_page=False)
         logger.warning(
-            "Could not find 'All ads' option. Trying to press first option."
+            "Could not find 'All ads' option. Trying keyboard: ArrowDown + Enter."
         )
-        # Press down arrow + Enter as fallback
         category_combo.press("ArrowDown")
         time.sleep(0.3)
         category_combo.press("Enter")
-        time.sleep(1.5)
+        time.sleep(2)
+
+    page.screenshot(path=str(debug_dir / "cat_step2_after_select.png"), full_page=False)
+    logger.info("DEBUG screenshot: cat_step2_after_select.png")
 
 
 def _find_search_input(page, selectors: dict):
-    """Locate the visible search input on the Ad Library page.
+    """Locate the visible AND enabled search input on the Ad Library page.
 
-    Waits up to 15s for the search input to appear — Meta's Ad Library is
-    JS-heavy and the search box can take a few seconds to render after
-    category selection.
+    After category selection the search box transitions from disabled/greyed-out
+    to active. This function waits for that transition, checking both visibility
+    and enabled state.
     """
     from playwright.sync_api import TimeoutError as PWTimeout
 
-    # Primary: input[type='search'] — the actual search box
-    for sel in [
-        "input[type='search']",
+    debug_dir = Path("debug_output")
+    debug_dir.mkdir(exist_ok=True)
+
+    # Selectors to try, in priority order
+    candidates = [
+        "input[type='search']:not([disabled])",
         selectors.get("search_input", "input[placeholder*='Search']"),
+        "input[placeholder*='Search by keyword or advertiser']",
         "input[placeholder*='keyword']",
         "input[placeholder*='advertiser']",
-    ]:
+    ]
+
+    # First pass: wait for an enabled search input (up to 15s total)
+    for sel in candidates:
         try:
-            page.wait_for_selector(sel, timeout=10_000, state="visible")
+            page.wait_for_selector(sel, timeout=8_000, state="visible")
             inp = page.query_selector(sel)
-            if inp and inp.is_visible():
-                logger.debug("Found search input via: %s", sel)
+            if inp and inp.is_visible() and inp.is_enabled():
+                logger.info("Found enabled search input via: %s", sel)
                 return inp
+            elif inp and inp.is_visible():
+                # Input exists but disabled — wait a bit for it to activate
+                logger.debug("Input found but disabled via %s, waiting...", sel)
+                for _ in range(10):
+                    time.sleep(0.5)
+                    if inp.is_enabled():
+                        logger.info("Search input became enabled via: %s", sel)
+                        return inp
+                logger.debug("Input stayed disabled via: %s", sel)
         except PWTimeout:
             continue
 
-    # Last fallback: scan all inputs
+    # Second pass: scan all visible inputs for a search-like one that's enabled
+    logger.debug("Primary selectors exhausted — scanning all inputs...")
     all_inputs = page.query_selector_all("input")
     for inp in all_inputs:
         try:
+            if not inp.is_visible():
+                continue
             ph = (inp.get_attribute("placeholder") or "").lower()
             typ = (inp.get_attribute("type") or "").lower()
-            if inp.is_visible() and (
+            disabled = inp.get_attribute("disabled")
+
+            is_search = (
                 typ == "search"
                 or ("search" in ph and "country" not in ph)
                 or "keyword" in ph
                 or "advertiser" in ph
-            ):
-                logger.debug("Found search input via input scan: placeholder='%s'", ph)
-                return inp
+            )
+            if is_search:
+                if disabled is not None:
+                    logger.debug("Found search input but it's disabled: placeholder='%s'", ph)
+                    # Wait a bit more — category selection might still be propagating
+                    for _ in range(10):
+                        time.sleep(0.5)
+                        if inp.is_enabled():
+                            logger.info("Search input became enabled: placeholder='%s'", ph)
+                            return inp
+                else:
+                    logger.info("Found enabled search input via scan: placeholder='%s'", ph)
+                    return inp
         except Exception:
             continue
 
+    page.screenshot(path=str(debug_dir / "search_FAIL_no_input.png"), full_page=False)
+    logger.error("DEBUG screenshot: search_FAIL_no_input.png — no enabled search input found")
     return None
 
 

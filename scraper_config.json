@@ -33,6 +33,8 @@
 
     "search_input": "input[placeholder*='Search']",
     "country_filter": "select[aria-label*='Country']",
+    "category_dropdown": "[role='combobox']",
+    "category_all_ads": "[role='option']:has-text('All ads')",
 
     "autocomplete_listbox": "[role='listbox']",
     "autocomplete_option": "li[role='option']",
