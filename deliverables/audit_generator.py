@@ -127,7 +127,7 @@ def _gather_data(brand_name: str) -> dict:
         # Client ads
         client_ads = [dict(r) for r in conn.execute(
             """SELECT a.*, aa.psychological_trigger, aa.copy_tone,
-                      aa.effectiveness_score
+                      json_extract(aa.analysis_json, '$.effectiveness_score') AS effectiveness_score
                FROM ads a LEFT JOIN ad_analysis aa ON aa.ad_id = a.id
                WHERE a.brand_id = ?""",
             (brand["id"],),

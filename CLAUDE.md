@@ -104,6 +104,16 @@ pytest tests/ -v
 - ReportLab coordinates are bottom-left origin — y=0 is the bottom of the page
 - SQLite doesn't enforce FK constraints by default — run `PRAGMA foreign_keys = ON` on every connection
 
+## Session Fixes (2026-03-24)
+
+- `ad_analysis` table has no `effectiveness_score` column — it lives inside `analysis_json`
+- Fixed `aa.effectiveness_score` → `json_extract(aa.analysis_json, '$.effectiveness_score')` in:
+  - `llm/chains.py` (lines 138, 154)
+  - `deliverables/audit_generator.py` (line 130)
+  - `deliverables/sprint_generator.py` (line 193)
+- Set `category = 'skincare'` for Just Herbs, Plum, Forest Essentials in DB
+- Live-tested all 3 chains + audit PDF against OpenRouter (Claude Sonnet 4 + Gemini 2.5 Flash)
+
 ## When Compacting
 
 Always preserve: the full list of pipeline stages, the Build Status table above, the database schema design, any scraper selector changes made during the session, and the current state of which modules are built vs pending.
