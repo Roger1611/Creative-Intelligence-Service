@@ -135,7 +135,8 @@ def chain_waste_diagnosis(
             """
             SELECT a.ad_library_id, a.creative_type, a.duration_days,
                    a.ad_copy, a.is_active,
-                   aa.psychological_trigger, aa.effectiveness_score
+                   aa.psychological_trigger,
+                   json_extract(aa.analysis_json, '$.effectiveness_score') AS effectiveness_score
             FROM ads a
             LEFT JOIN ad_analysis aa ON aa.ad_id = a.id
             WHERE a.brand_id = ?
@@ -151,7 +152,7 @@ def chain_waste_diagnosis(
                    aa.copy_tone,
                    a.creative_type,
                    COUNT(*) AS ad_count,
-                   AVG(aa.effectiveness_score) AS avg_effectiveness
+                   AVG(json_extract(aa.analysis_json, '$.effectiveness_score')) AS avg_effectiveness
             FROM ads a
             JOIN brands b ON a.brand_id = b.id
             JOIN competitor_sets cs ON cs.competitor_brand_id = b.id
@@ -341,25 +342,60 @@ def chain_full(client_brand_name: str, num_concepts: int = 50) -> dict:
 
 
 def _save_ad_analysis(conn, ad_id: int, analysis: dict) -> None:
-    """Insert or replace an ad_analysis row."""
-    conn.execute(
-        """
-        INSERT INTO ad_analysis (
-            ad_id, psychological_trigger, visual_layout, copy_tone,
-            reading_level, color_palette_json, is_profitable, analysis_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            ad_id,
-            analysis.get("psychological_trigger"),
-            analysis.get("visual_layout"),
-            analysis.get("copy_tone"),
-            analysis.get("reading_level"),
-            json.dumps(analysis.get("color_palette", []), ensure_ascii=False),
-            1 if analysis.get("effectiveness_score", 0) >= 7 else 0,
-            json.dumps(analysis, ensure_ascii=False),
-        ),
-    )
+    """Insert or update an ad_analysis row.
+
+    The profitability_filter may have already created a row with just
+    is_profitable set. If so, we UPDATE it with the full LLM analysis.
+    Otherwise we INSERT a new row.
+    """
+    existing = conn.execute(
+        "SELECT id FROM ad_analysis WHERE ad_id = ?", (ad_id,)
+    ).fetchone()
+
+    is_profitable = 1 if analysis.get("effectiveness_score", 0) >= 7 else 0
+    palette_json = json.dumps(analysis.get("color_palette", []), ensure_ascii=False)
+    analysis_json = json.dumps(analysis, ensure_ascii=False)
+
+    if existing:
+        conn.execute(
+            """UPDATE ad_analysis
+               SET psychological_trigger = ?,
+                   visual_layout         = ?,
+                   copy_tone             = ?,
+                   reading_level         = ?,
+                   color_palette_json    = ?,
+                   is_profitable         = COALESCE(is_profitable, ?),
+                   analysis_json         = ?,
+                   analyzed_at           = datetime('now')
+               WHERE id = ?""",
+            (
+                analysis.get("psychological_trigger"),
+                analysis.get("visual_layout"),
+                analysis.get("copy_tone"),
+                analysis.get("reading_level"),
+                palette_json,
+                is_profitable,
+                analysis_json,
+                existing["id"],
+            ),
+        )
+    else:
+        conn.execute(
+            """INSERT INTO ad_analysis (
+                   ad_id, psychological_trigger, visual_layout, copy_tone,
+                   reading_level, color_palette_json, is_profitable, analysis_json
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                ad_id,
+                analysis.get("psychological_trigger"),
+                analysis.get("visual_layout"),
+                analysis.get("copy_tone"),
+                analysis.get("reading_level"),
+                palette_json,
+                is_profitable,
+                analysis_json,
+            ),
+        )
 
 
 def _save_waste_report(conn, brand_id: int, report: dict) -> None:
@@ -425,4 +461,67 @@ def _save_json(brand_name: str, stage: str, data) -> None:
     out_path.write_text(
         json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    logger.info("Saved %s → %s", stage, out_path)
+    logger.info("Saved %s -> %s", stage, out_path)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CLI
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def _cli() -> None:
+    import argparse
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)-8s %(name)s -- %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    parser = argparse.ArgumentParser(
+        prog="python -m llm.chains",
+        description="Run LLM prompt chains: competitor analysis, waste diagnosis, "
+                    "concept generation, or full pipeline.",
+    )
+    parser.add_argument("--brand", required=True, help="Client brand name")
+    parser.add_argument(
+        "--chain",
+        choices=["competitor", "waste", "concepts", "full"],
+        default="full",
+        help="Which chain to run (default: full)",
+    )
+    parser.add_argument(
+        "--num-concepts", type=int, default=50,
+        help="Number of concepts to generate (default: 50)",
+    )
+    args = parser.parse_args()
+
+    if args.chain == "competitor":
+        results = chain_competitor_analysis(args.brand)
+        errors = [r for r in results if "error" in r]
+        print(f"\n  Competitor analysis: {len(results)} ads processed, "
+              f"{len(results) - len(errors)} succeeded, {len(errors)} failed")
+
+    elif args.chain == "waste":
+        result = chain_waste_diagnosis(args.brand)
+        actions = result.get("priority_actions", [])
+        print(f"\n  Waste diagnosis complete: {len(actions)} priority actions")
+
+    elif args.chain == "concepts":
+        concepts = chain_concept_generation(args.brand, num_concepts=args.num_concepts)
+        print(f"\n  Generated {len(concepts)} concepts")
+
+    elif args.chain == "full":
+        result = chain_full(args.brand, num_concepts=args.num_concepts)
+        comp = result["competitor_analysis"]
+        errors = [r for r in comp if "error" in r]
+        print(f"\n  Competitor analysis: {len(comp)} ads, {len(errors)} errors")
+        print(f"  Waste diagnosis: done")
+        print(f"  Concepts generated: {len(result['concepts'])}")
+
+    slug = safe_brand_slug(args.brand)
+    print(f"\nOutputs in: {PROC_DIR}/{slug}_*.json")
+
+
+if __name__ == "__main__":
+    _cli()

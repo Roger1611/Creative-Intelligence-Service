@@ -34,11 +34,12 @@ if not OPENROUTER_API_KEY:
 # ── LLM settings ──────────────────────────────────────────────────────────────
 
 # Task → OpenRouter model mapping.  Override individual entries via env vars
-# (e.g. MODEL_COMPETITOR_DECONSTRUCTION=anthropic/claude-sonnet-4-20250514).
+# (e.g. MODEL_COMPETITOR_DECONSTRUCTION=anthropic/claude-sonnet-4).
+# NOTE: OpenRouter model IDs do NOT use date suffixes — use the bare ID.
 MODEL_MAP: dict[str, str] = {
     "competitor_deconstruction": os.getenv(
         "MODEL_COMPETITOR_DECONSTRUCTION",
-        "anthropic/claude-sonnet-4-20250514",
+        "anthropic/claude-sonnet-4",
     ),
     "waste_diagnosis": os.getenv(
         "MODEL_WASTE_DIAGNOSIS",
@@ -46,7 +47,7 @@ MODEL_MAP: dict[str, str] = {
     ),
     "concept_generation": os.getenv(
         "MODEL_CONCEPT_GENERATION",
-        "anthropic/claude-sonnet-4-20250514",
+        "anthropic/claude-sonnet-4",
     ),
     "fallback": os.getenv(
         "MODEL_FALLBACK",

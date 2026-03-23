@@ -29,8 +29,8 @@ _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 # Cost per 1M tokens (USD) — approximate OpenRouter pricing, update as needed
 _COST_TABLE: dict[str, dict[str, float]] = {
-    "anthropic/claude-sonnet-4-20250514": {"input": 3.00, "output": 15.00},
-    "google/gemini-2.5-flash":            {"input": 0.15, "output": 0.60},
+    "anthropic/claude-sonnet-4":  {"input": 3.00, "output": 15.00},
+    "google/gemini-2.5-flash":    {"input": 0.15, "output": 0.60},
 }
 
 # Retry / rate-limit defaults
