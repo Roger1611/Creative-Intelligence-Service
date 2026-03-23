@@ -1,5 +1,5 @@
 """
-llm/client.py — Unified LLM client supporting Claude (Anthropic) and GPT-4o (OpenAI).
+llm/client.py — Unified LLM client routed through OpenRouter (OpenAI-compatible).
 
 Provides multimodal ad analysis, text generation, and batch processing with
 automatic retries, rate limiting, and per-call cost logging.
@@ -13,24 +13,24 @@ import time
 from pathlib import Path
 from typing import Any
 
-import anthropic
 import openai
 
 from config import (
-    ANTHROPIC_API_KEY,
-    ANTHROPIC_MODEL,
     LLM_MAX_TOKENS,
     LLM_TEMPERATURE,
-    OPENAI_API_KEY,
-    OPENAI_MODEL,
+    MODEL_MAP,
+    OPENROUTER_API_KEY,
 )
 
 logger = logging.getLogger(__name__)
 
-# Cost per 1M tokens (USD) — update when pricing changes
-_COST_TABLE = {
-    "claude": {"input": 15.00, "output": 75.00},
-    "openai": {"input": 5.00, "output": 15.00},
+# OpenRouter base URL (OpenAI-compatible)
+_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
+# Cost per 1M tokens (USD) — approximate OpenRouter pricing, update as needed
+_COST_TABLE: dict[str, dict[str, float]] = {
+    "anthropic/claude-sonnet-4-20250514": {"input": 3.00, "output": 15.00},
+    "google/gemini-2.5-flash":            {"input": 0.15, "output": 0.60},
 }
 
 # Retry / rate-limit defaults
@@ -46,7 +46,7 @@ def analyze_ad(
     image_path: str,
     ad_copy: str,
     system_prompt: str = "",
-    model: str = "claude",
+    model: str = "competitor_deconstruction",
 ) -> dict[str, Any]:
     """Send an ad image + copy for multimodal analysis. Returns parsed JSON dict."""
     prompt = (
@@ -66,7 +66,7 @@ def analyze_ad(
 def generate_text(
     prompt: str,
     system_prompt: str = "",
-    model: str = "claude",
+    model: str = "concept_generation",
 ) -> Any:
     """Text-only generation. Returns parsed JSON (dict or list)."""
     return _call(prompt=prompt, system_prompt=system_prompt, model=model)
@@ -75,7 +75,7 @@ def generate_text(
 def batch_analyze(
     ads_list: list[dict],
     system_prompt: str = "",
-    model: str = "claude",
+    model: str = "competitor_deconstruction",
 ) -> list[dict[str, Any]]:
     """
     Process multiple ads with rate limiting between calls.
@@ -109,27 +109,30 @@ def batch_analyze(
 # ── Internal dispatch ─────────────────────────────────────────────────────────
 
 
+def _resolve_model(task_or_model: str) -> str:
+    """Map a task name to an OpenRouter model ID, or pass through if already a model path."""
+    return MODEL_MAP.get(task_or_model, task_or_model)
+
+
 def _call(
     prompt: str,
     system_prompt: str = "",
     images: list[str] | None = None,
-    model: str = "claude",
+    model: str = "concept_generation",
 ) -> Any:
     """
-    Dispatch to the chosen provider with retry logic.
+    Dispatch to OpenRouter with retry logic.
 
-    If model is 'claude', tries Anthropic first and falls back to OpenAI.
-    If model is 'openai', uses OpenAI only.
+    *model* can be a task name (looked up in MODEL_MAP) or a direct model ID.
+    On exhausted retries, falls back to MODEL_MAP["fallback"].
     """
+    resolved = _resolve_model(model)
     last_exc: Exception | None = None
 
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
-            if model == "claude":
-                return _anthropic_call(prompt, system_prompt, images)
-            else:
-                return _openai_call(prompt, system_prompt)
-        except (anthropic.RateLimitError, openai.RateLimitError) as exc:
+            return _openrouter_call(prompt, system_prompt, images, resolved)
+        except openai.RateLimitError as exc:
             wait = _RETRY_BACKOFF_BASE ** attempt
             logger.warning(
                 "Rate limited (attempt %d/%d), retrying in %.1fs: %s",
@@ -137,8 +140,7 @@ def _call(
             )
             last_exc = exc
             time.sleep(wait)
-        except (anthropic.APIStatusError, openai.APIStatusError) as exc:
-            # Retry on server errors (5xx), raise on client errors (4xx)
+        except openai.APIStatusError as exc:
             status = getattr(exc, "status_code", 500)
             if status >= 500 and attempt < _MAX_RETRIES:
                 wait = _RETRY_BACKOFF_BASE ** attempt
@@ -153,83 +155,51 @@ def _call(
         except Exception:
             raise
 
-    # All retries exhausted — try fallback if using Claude
-    if model == "claude":
-        logger.info("All Anthropic retries exhausted, falling back to OpenAI")
+    # All retries exhausted — try fallback model
+    fallback = MODEL_MAP.get("fallback")
+    if fallback and fallback != resolved:
+        logger.info(
+            "All retries exhausted for %s, falling back to %s", resolved, fallback
+        )
         try:
-            return _openai_call(prompt, system_prompt)
+            return _openrouter_call(prompt, system_prompt, images, fallback)
         except Exception:
             pass  # raise the original error below
 
     raise last_exc  # type: ignore[misc]
 
 
-# ── Anthropic ─────────────────────────────────────────────────────────────────
+# ── OpenRouter (OpenAI-compatible) ───────────────────────────────────────────
 
 
-def _anthropic_call(
-    prompt: str, system_prompt: str, images: list[str] | None
+def _openrouter_call(
+    prompt: str,
+    system_prompt: str,
+    images: list[str] | None,
+    model_id: str,
 ) -> Any:
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-
-    content: list[dict] = []
-    if images:
-        for img in images:
-            content.append(_anthropic_image_block(img))
-    content.append({"type": "text", "text": prompt})
-
-    kwargs: dict = {
-        "model": ANTHROPIC_MODEL,
-        "max_tokens": LLM_MAX_TOKENS,
-        "temperature": LLM_TEMPERATURE,
-        "messages": [{"role": "user", "content": content}],
-    }
-    if system_prompt:
-        kwargs["system"] = system_prompt
-
-    response = client.messages.create(**kwargs)
-
-    in_tok = response.usage.input_tokens
-    out_tok = response.usage.output_tokens
-    cost = _estimate_cost(in_tok, out_tok, _COST_TABLE["claude"])
-
-    logger.info(
-        "[Anthropic] model=%s in=%d out=%d tokens est_cost=$%.4f",
-        ANTHROPIC_MODEL, in_tok, out_tok, cost,
+    """Make a single call to OpenRouter using the OpenAI SDK."""
+    client = openai.OpenAI(
+        base_url=_OPENROUTER_BASE_URL,
+        api_key=OPENROUTER_API_KEY,
     )
-
-    return _parse_json(response.content[0].text)
-
-
-def _anthropic_image_block(path_or_url: str) -> dict:
-    if path_or_url.startswith("http"):
-        return {
-            "type": "image",
-            "source": {"type": "url", "url": path_or_url},
-        }
-
-    file_path = Path(path_or_url)
-    mime = mimetypes.guess_type(str(file_path))[0] or "image/jpeg"
-    data = base64.standard_b64encode(file_path.read_bytes()).decode()
-    return {
-        "type": "image",
-        "source": {"type": "base64", "media_type": mime, "data": data},
-    }
-
-
-# ── OpenAI ────────────────────────────────────────────────────────────────────
-
-
-def _openai_call(prompt: str, system_prompt: str) -> Any:
-    client = openai.OpenAI(api_key=OPENAI_API_KEY)
 
     messages: list[dict] = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": prompt})
+
+    # Build user message content (text-only or multimodal)
+    if images:
+        content: list[dict] = []
+        for img in images:
+            content.append(_image_content_block(img))
+        content.append({"type": "text", "text": prompt})
+        messages.append({"role": "user", "content": content})
+    else:
+        messages.append({"role": "user", "content": prompt})
 
     response = client.chat.completions.create(
-        model=OPENAI_MODEL,
+        model=model_id,
         messages=messages,
         max_tokens=LLM_MAX_TOKENS,
         temperature=LLM_TEMPERATURE,
@@ -237,14 +207,32 @@ def _openai_call(prompt: str, system_prompt: str) -> Any:
 
     in_tok = response.usage.prompt_tokens
     out_tok = response.usage.completion_tokens
-    cost = _estimate_cost(in_tok, out_tok, _COST_TABLE["openai"])
+    rates = _COST_TABLE.get(model_id, {"input": 1.00, "output": 3.00})
+    cost = _estimate_cost(in_tok, out_tok, rates)
 
     logger.info(
-        "[OpenAI] model=%s in=%d out=%d tokens est_cost=$%.4f",
-        OPENAI_MODEL, in_tok, out_tok, cost,
+        "[OpenRouter] model=%s in=%d out=%d tokens est_cost=$%.4f",
+        model_id, in_tok, out_tok, cost,
     )
 
     return _parse_json(response.choices[0].message.content)
+
+
+def _image_content_block(path_or_url: str) -> dict:
+    """Build an OpenAI-vision-format image content block."""
+    if path_or_url.startswith("http"):
+        return {
+            "type": "image_url",
+            "image_url": {"url": path_or_url},
+        }
+
+    file_path = Path(path_or_url)
+    mime = mimetypes.guess_type(str(file_path))[0] or "image/jpeg"
+    data = base64.standard_b64encode(file_path.read_bytes()).decode()
+    return {
+        "type": "image_url",
+        "image_url": {"url": f"data:{mime};base64,{data}"},
+    }
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

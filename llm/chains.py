@@ -23,7 +23,7 @@ _PROMPTS_DIR = Path(__file__).parent / "prompts"
 # ── Public chain functions ────────────────────────────────────────────────────
 
 
-def chain_competitor_analysis(brand_name: str, model: str = "claude") -> list[dict]:
+def chain_competitor_analysis(brand_name: str, model: str = "competitor_deconstruction") -> list[dict]:
     """
     Run competitor_deconstruction on all competitor ads for *brand_name*.
     Stores each result in ad_analysis and writes combined JSON to data/processed/.
@@ -112,7 +112,7 @@ def chain_competitor_analysis(brand_name: str, model: str = "claude") -> list[di
 
 
 def chain_waste_diagnosis(
-    client_brand_name: str, model: str = "claude"
+    client_brand_name: str, model: str = "waste_diagnosis"
 ) -> dict:
     """
     Run waste diagnosis using client ad data + competitor benchmarks.
@@ -208,7 +208,7 @@ def chain_waste_diagnosis(
 def chain_concept_generation(
     client_brand_name: str,
     num_concepts: int = 50,
-    model: str = "claude",
+    model: str = "concept_generation",
 ) -> list[dict]:
     """
     Generate ad concepts using brand context + competitor intel + waste diagnosis.
@@ -307,21 +307,22 @@ def chain_concept_generation(
     return result
 
 
-def chain_full(client_brand_name: str, num_concepts: int = 50, model: str = "claude") -> dict:
+def chain_full(client_brand_name: str, num_concepts: int = 50) -> dict:
     """
     Run all three chains in sequence:
     1. Competitor analysis
     2. Waste diagnosis
     3. Concept generation
 
+    Each chain uses its own default model from MODEL_MAP.
     Returns dict with keys: competitor_analysis, waste_diagnosis, concepts.
     """
     logger.info("Starting full chain for '%s'", client_brand_name)
 
-    competitor_analysis = chain_competitor_analysis(client_brand_name, model=model)
-    waste_diagnosis = chain_waste_diagnosis(client_brand_name, model=model)
+    competitor_analysis = chain_competitor_analysis(client_brand_name)
+    waste_diagnosis = chain_waste_diagnosis(client_brand_name)
     concepts = chain_concept_generation(
-        client_brand_name, num_concepts=num_concepts, model=model
+        client_brand_name, num_concepts=num_concepts
     )
 
     full_output = {

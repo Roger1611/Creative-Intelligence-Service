@@ -26,18 +26,34 @@ SCHEMA_PATH = ROOT_DIR / "db" / "schema.sql"
 
 # ── API keys ───────────────────────────────────────────────────────────────────
 
-ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
-OPENAI_API_KEY:    str = os.getenv("OPENAI_API_KEY", "")
+OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
 
-if not ANTHROPIC_API_KEY:
-    logger.warning("ANTHROPIC_API_KEY is not set — LLM calls will fail.")
-if not OPENAI_API_KEY:
-    logger.warning("OPENAI_API_KEY is not set — OpenAI fallback will fail.")
+if not OPENROUTER_API_KEY:
+    logger.warning("OPENROUTER_API_KEY is not set — LLM calls will fail.")
 
 # ── LLM settings ──────────────────────────────────────────────────────────────
 
-ANTHROPIC_MODEL: str   = os.getenv("ANTHROPIC_MODEL", "claude-opus-4-6")
-OPENAI_MODEL:    str   = os.getenv("OPENAI_MODEL",    "gpt-4o")
+# Task → OpenRouter model mapping.  Override individual entries via env vars
+# (e.g. MODEL_COMPETITOR_DECONSTRUCTION=anthropic/claude-sonnet-4-20250514).
+MODEL_MAP: dict[str, str] = {
+    "competitor_deconstruction": os.getenv(
+        "MODEL_COMPETITOR_DECONSTRUCTION",
+        "anthropic/claude-sonnet-4-20250514",
+    ),
+    "waste_diagnosis": os.getenv(
+        "MODEL_WASTE_DIAGNOSIS",
+        "google/gemini-2.5-flash",
+    ),
+    "concept_generation": os.getenv(
+        "MODEL_CONCEPT_GENERATION",
+        "anthropic/claude-sonnet-4-20250514",
+    ),
+    "fallback": os.getenv(
+        "MODEL_FALLBACK",
+        "google/gemini-2.5-flash",
+    ),
+}
+
 LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.7"))
 LLM_MAX_TOKENS:  int   = int(os.getenv("LLM_MAX_TOKENS",   "4096"))
 

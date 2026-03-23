@@ -10,7 +10,7 @@ Solo-operator AI pipeline that scrapes Meta Ad Library, analyzes competitor ads 
 
 ## Tech Stack
 
-Python 3.11+, SQLite, Playwright (scraping), httpx, Anthropic Claude API (multimodal analysis + generation), OpenAI GPT-4o (fallback), ReportLab (PDFs), python-dotenv. All keys in `.env` (never committed).
+Python 3.11+, SQLite, Playwright (scraping), httpx, OpenRouter API via openai SDK (Claude Sonnet 4 for multimodal analysis + concept generation, Gemini 2.5 Flash for waste diagnosis + fallback), ReportLab (PDFs), python-dotenv. All keys in `.env` (never committed).
 
 ## Project Structure
 
@@ -42,7 +42,7 @@ config.py         → Central config, loads .env, initializes DB on first run
 | analysis/profitability_filter.py | ✅ Done | Flags ad_analysis.is_profitable; ranked winner list; cross-competitor patterns |
 | analysis/fatigue_scorer.py | ✅ Done | 5-component fatigue score (0–100); competitor benchmarking; waste_reports table |
 | analysis/category_intel.py | ✅ Done | Trigger win rates; format over-performance; underused angles; patterns + opportunities |
-| llm/client.py | ✅ Done | analyze_ad, generate_text, batch_analyze; retries + fallback; cost logging |
+| llm/client.py | ✅ Done | OpenRouter via openai SDK; task→model routing (MODEL_MAP); multimodal vision; retries + fallback; cost logging |
 | llm/prompts/*.txt | ✅ Done | competitor_deconstruction, waste_diagnosis, concept_generation |
 | llm/chains.py | ✅ Done | chain_competitor_analysis, chain_waste_diagnosis, chain_concept_generation, chain_full; DB + JSON output |
 | deliverables/audit_generator.py | ✅ Done | 3-page PDF: cover+snapshot, competitor comparison, sample hooks+CTA; CLI --brand --output |
