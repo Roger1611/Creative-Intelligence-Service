@@ -2,10 +2,13 @@
   "_comment": "All CSS/XPath selectors live here. Update this file when Meta or Instagram changes their DOM — no Python changes needed.",
 
   "meta_ad_library": {
-    "_updated": "2024-03",
+    "_updated": "2026-03",
+
+    "card_text_anchor": "Library ID",
+    "card_date_anchor": "Started running on",
 
     "ad_card": "div[data-testid='ad-archive-preview-card']",
-    "ad_card_alt": "div._7jyg._7jyi",
+    "ad_card_alt": "div[role='article']",
 
     "ad_id_link": "a[href*='id=']",
     "ad_id_attribute": "div[id]",
