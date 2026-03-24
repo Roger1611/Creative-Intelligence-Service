@@ -63,6 +63,7 @@ LLM_MAX_TOKENS:  int   = int(os.getenv("LLM_MAX_TOKENS",   "4096"))
 SCRAPER_DELAY_MIN: float = float(os.getenv("SCRAPER_DELAY_MIN", "2"))
 SCRAPER_DELAY_MAX: float = float(os.getenv("SCRAPER_DELAY_MAX", "5"))
 SCRAPER_TIMEOUT:   int   = int(os.getenv("SCRAPER_TIMEOUT",    "30"))
+MAX_ADS_DEFAULT:   int   = int(os.getenv("MAX_ADS_DEFAULT",    "200"))
 
 SCRAPER_USER_AGENTS: list[str] = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -124,6 +125,7 @@ def _migrate_ads_table() -> None:
     new_columns = {
         "caption": "TEXT",
         "transcript": "TEXT",
+        "transcript_language": "TEXT",
         "frames_path": "TEXT",
         "video_url": "TEXT",
     }

@@ -43,12 +43,29 @@ _BATCH_DELAY = 1.0  # seconds between batch items
 
 
 def analyze_ad(
-    image_path: str,
+    image_path: str | list[str],
     ad_copy: str,
     system_prompt: str = "",
     model: str = "competitor_deconstruction",
 ) -> dict[str, Any]:
-    """Send an ad image + copy for multimodal analysis. Returns parsed JSON dict."""
+    """Send ad image(s) + copy for multimodal analysis. Returns parsed JSON dict.
+
+    *image_path* can be a single path/URL string or a list of paths/URLs.
+    Empty strings and non-existent local files are filtered out.
+    """
+    # Normalise to list and filter empties / missing files
+    if isinstance(image_path, str):
+        raw_images = [image_path] if image_path else []
+    else:
+        raw_images = list(image_path) if image_path else []
+
+    valid_images: list[str] = []
+    for img in raw_images:
+        if not img:
+            continue
+        if img.startswith("http") or Path(img).is_file():
+            valid_images.append(img)
+
     prompt = (
         "Analyze the following ad creative.\n\n"
         f"<ad_content>\n{ad_copy}\n</ad_content>\n\n"
@@ -58,7 +75,7 @@ def analyze_ad(
     return _call(
         prompt=prompt,
         system_prompt=system_prompt,
-        images=[image_path] if image_path else None,
+        images=valid_images or None,
         model=model,
     )
 

@@ -257,10 +257,17 @@ def _page_cover(data: dict) -> list:
     story.append(metric_cards)
     story.append(Spacer(1, 4 * mm))
 
+    # Video ads with transcripts count
+    video_transcript_count = sum(
+        1 for a in active_ads
+        if a.get("creative_type") == "video" and a.get("transcript")
+    )
+
     # Format distribution line
-    story.append(Paragraph(
-        f"<b>Format mix:</b> {fmt_str or 'No ads found'}",
-        _s("fmtline", fontSize=10, spaceAfter=6)))
+    fmt_line = f"<b>Format mix:</b> {fmt_str or 'No ads found'}"
+    if video_transcript_count:
+        fmt_line += f" &bull; {video_transcript_count} video ad{'s' if video_transcript_count != 1 else ''} with transcripts analyzed"
+    story.append(Paragraph(fmt_line, _s("fmtline", fontSize=10, spaceAfter=6)))
 
     story.append(Spacer(1, 4 * mm))
 

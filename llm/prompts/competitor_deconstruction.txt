@@ -13,6 +13,9 @@ Required JSON output:
   "copy_tone": "<one of: conversational, authoritative, urgent, empathetic, aspirational, educational>",
   "reading_level": "<one of: simple, moderate, advanced>",
   "hook_analysis": "<what the first line or visual element does to stop the scroll>",
+  "spoken_hook": "<for video ads with transcript: the opening spoken line (first ~5 seconds). null if no transcript>",
+  "language_mix": "<one of: hindi_dominant, english_dominant, code_switch, na. 'na' if no transcript>",
+  "transcript_cta": "<the spoken call-to-action phrase from the transcript. null if no transcript>",
   "cta_type": "<one of: shop_now, learn_more, sign_up, limited_offer, social_proof_cta, try_free>",
   "color_palette": ["<hex1>", "<hex2>", "<hex3>"],
   "effectiveness_score": <integer 1-10>,
@@ -28,4 +31,9 @@ Rules:
 - color_palette must contain 2-5 hex color codes extracted from the visual.
 - effectiveness_score must be an integer from 1 to 10.
 - If the ad has no image, base visual_layout and color_palette on the copy and any available metadata.
+- If the ad copy contains a [VIDEO TRANSCRIPT] section, analyze the spoken content:
+  - spoken_hook: extract the opening spoken line (roughly first 5 seconds of speech).
+  - language_mix: classify as hindi_dominant, english_dominant, or code_switch based on the transcript language blend. Hindi-English code-switching is very common in Indian D2C video ads.
+  - transcript_cta: identify the spoken call-to-action phrase (e.g. "order now", "link in bio", "try it today").
+- If no transcript is present (static ad), set spoken_hook, transcript_cta to null and language_mix to "na".
 - Return ONLY the JSON object. No markdown fences, no explanation outside the JSON.

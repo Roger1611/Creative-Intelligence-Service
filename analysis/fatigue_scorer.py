@@ -89,9 +89,14 @@ def run(brand_name: str, competitor_names: list[str]) -> dict:
     )
 
     # ── Score components ───────────────────────────────────────────────────────
+    has_video_transcript = any(
+        ad.get("creative_type") == "video" and ad.get("transcript")
+        for ad in client_ads
+    )
     critical_penalty      = _critical_penalty(critical_ads)
     warning_penalty       = _warning_penalty(warning_ads)
-    concentration_penalty = _concentration_penalty(format_mix, len(client_ads))
+    concentration_penalty = _concentration_penalty(format_mix, len(client_ads),
+                                                   has_video_with_transcript=has_video_transcript)
     count_deficit_penalty = _count_deficit_penalty(len(client_ads), competitor_avg_count)
     recency_penalty       = _recency_penalty(days_since_new)
 
@@ -211,10 +216,15 @@ def _warning_penalty(warning_ads: list[dict]) -> float:
     return min(_WARNING_PTS_PER_AD * len(warning_ads), _WARNING_CAP)
 
 
-def _concentration_penalty(format_mix: dict, total_ads: int) -> float:
+def _concentration_penalty(
+    format_mix: dict, total_ads: int, has_video_with_transcript: bool = False,
+) -> float:
     """
     Penalty when a single format accounts for > 60% of active ads.
     Scales linearly from 0 at 60% dominance to full 25 pts at 100% dominance.
+
+    Video ads with transcripts represent higher creative investment —
+    if present, reduce the penalty by 20% (even if video is the dominant format).
     """
     if total_ads == 0:
         return 0.0
@@ -225,7 +235,10 @@ def _concentration_penalty(format_mix: dict, total_ads: int) -> float:
     if max_pct <= _CONCENTRATION_TRIGGER:
         return 0.0
     ratio = (max_pct - _CONCENTRATION_TRIGGER) / (1.0 - _CONCENTRATION_TRIGGER)
-    return round(ratio * _CONCENTRATION_CAP, 1)
+    penalty = round(ratio * _CONCENTRATION_CAP, 1)
+    if has_video_with_transcript:
+        penalty = round(penalty * 0.8, 1)
+    return penalty
 
 
 def _count_deficit_penalty(client_count: int, competitor_avg: float) -> float:

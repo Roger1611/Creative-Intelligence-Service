@@ -187,7 +187,23 @@ def _deduplicate(ads: list[dict]) -> list[dict]:
             new_dur      = ad.get("duration_days") or 0
             if new_dur > existing_dur:
                 thumb_seen[url] = ad
-    return list(thumb_seen.values())
+    deduped = list(thumb_seen.values())
+
+    # Pass 4 — video URL dedup (same video creative, different IDs)
+    vid_seen: dict[str, dict] = {}
+    for ad in deduped:
+        vurl = (ad.get("video_url") or "").strip()
+        if not vurl:
+            vid_seen[ad["ad_library_id"]] = ad
+            continue
+        if vurl not in vid_seen:
+            vid_seen[vurl] = ad
+        else:
+            existing_dur = vid_seen[vurl].get("duration_days") or 0
+            new_dur      = ad.get("duration_days") or 0
+            if new_dur > existing_dur:
+                vid_seen[vurl] = ad
+    return list(vid_seen.values())
 
 
 def _copy_fingerprint(text: Optional[str]) -> Optional[str]:
@@ -247,8 +263,15 @@ def _diversity_score(ads: list[dict], fmt_dist: dict) -> dict:
         1 for fmt in VALID_CREATIVE_TYPES
         if fmt_dist.get(fmt, {}).get("count", 0) > 0
     )
+    # Bonus: video ads with transcripts count as richer creative investment
+    has_video_with_transcript = any(
+        ad.get("creative_type") == "video" and ad.get("transcript")
+        for ad in ads
+    )
+    if has_video_with_transcript and active_formats < 4:
+        active_formats += 1  # treat video-with-transcript as an extra format variant
     # Scale: 1→0, 2→8, 3→17, 4→25
-    variety_pts = round((active_formats - 1) / 3 * 25, 1) if active_formats > 0 else 0.0
+    variety_pts = round((min(active_formats, 4) - 1) / 3 * 25, 1) if active_formats > 0 else 0.0
 
     # 2. Copy variation (0–25)
     copies = [_copy_fingerprint(ad.get("ad_copy")) for ad in ads]
@@ -385,13 +408,20 @@ def _upsert_ads(brand_id: int, raw_ads: list[dict]) -> int:
                 """INSERT INTO ads (
                        brand_id, ad_library_id, creative_type, ad_copy,
                        cta_type, image_path, thumbnail_url,
-                       start_date, last_seen_date, is_active, scraped_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       start_date, last_seen_date, is_active, scraped_at,
+                       caption, transcript, transcript_language,
+                       frames_path, video_url
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(ad_library_id) DO UPDATE SET
-                       last_seen_date = excluded.last_seen_date,
-                       image_path     = COALESCE(excluded.image_path, image_path),
-                       is_active      = excluded.is_active,
-                       scraped_at     = excluded.scraped_at""",
+                       last_seen_date     = excluded.last_seen_date,
+                       image_path         = COALESCE(excluded.image_path, image_path),
+                       is_active          = excluded.is_active,
+                       scraped_at         = excluded.scraped_at,
+                       caption            = COALESCE(excluded.caption, caption),
+                       transcript         = COALESCE(excluded.transcript, transcript),
+                       transcript_language = COALESCE(excluded.transcript_language, transcript_language),
+                       frames_path        = COALESCE(excluded.frames_path, frames_path),
+                       video_url          = COALESCE(excluded.video_url, video_url)""",
                 (
                     brand_id,
                     ad.get("ad_library_id", ""),
@@ -404,6 +434,11 @@ def _upsert_ads(brand_id: int, raw_ads: list[dict]) -> int:
                     ad.get("last_seen_date"),
                     int(ad.get("is_active", True)),
                     ad.get("scraped_at"),
+                    ad.get("caption"),
+                    ad.get("transcript"),
+                    ad.get("transcript_language"),
+                    ad.get("frames_path"),
+                    ad.get("video_url"),
                 ),
             )
             count += 1

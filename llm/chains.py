@@ -39,11 +39,13 @@ def chain_competitor_analysis(brand_name: str, model: str = "competitor_deconstr
         if not brand:
             raise ValueError(f"Client brand '{brand_name}' not found in database")
 
-        # Get all competitor ads
+        # Get all competitor ads (including video/transcript fields)
         competitor_ads = conn.execute(
             """
             SELECT a.id AS ad_id, a.ad_library_id, a.ad_copy, a.image_path,
-                   a.creative_type, a.duration_days, b.name AS competitor_name
+                   a.creative_type, a.duration_days, b.name AS competitor_name,
+                   a.frames_path, a.transcript, a.transcript_language,
+                   a.video_url, a.thumbnail_url
             FROM ads a
             JOIN brands b ON a.brand_id = b.id
             JOIN competitor_sets cs ON cs.competitor_brand_id = b.id
@@ -77,10 +79,20 @@ def chain_competitor_analysis(brand_name: str, model: str = "competitor_deconstr
                 f'"ad_library_id": "{ad["ad_library_id"]}"',
             )
 
+            # Build image list: for video ads send thumbnail + first 3 frames
+            # (cap at 4 images total per API call to control costs)
+            images = _collect_ad_images(ad)
+
+            # Build copy: append transcript for video ads
+            ad_copy = ad.get("ad_copy") or ""
+            transcript = ad.get("transcript")
+            if transcript:
+                ad_copy += f"\n\n[VIDEO TRANSCRIPT]\n{transcript}"
+
             try:
                 analysis = analyze_ad(
-                    image_path=ad.get("image_path") or "",
-                    ad_copy=ad.get("ad_copy") or "",
+                    image_path=images,
+                    ad_copy=ad_copy,
                     system_prompt=ad_system,
                     model=model,
                 )
@@ -336,6 +348,39 @@ def chain_full(client_brand_name: str, num_concepts: int = 50) -> dict:
     _save_json(client_brand_name, "full_chain", full_output)
     logger.info("Full chain complete for '%s'", client_brand_name)
     return full_output
+
+
+# ── Image helpers ────────────────────────────────────────────────────────────
+
+
+def _collect_ad_images(ad: dict) -> list[str]:
+    """Build an image list for multimodal LLM analysis.
+
+    For video ads: thumbnail + first 3 frames (0s, 0.5s, 1.0s).
+    For static ads: thumbnail/image_path only.
+    Cap at 4 images total to control API costs.
+    """
+    images: list[str] = []
+    _MAX_IMAGES = 4
+
+    # Start with thumbnail if available
+    img_path = ad.get("image_path") or ""
+    if img_path and Path(img_path).is_file():
+        images.append(img_path)
+
+    # For video ads, add early frames (the opening hook visuals)
+    frames_path = ad.get("frames_path") or ""
+    if frames_path:
+        frames_dir = Path(frames_path)
+        if frames_dir.is_dir():
+            # Sorted by timestamp: frame_0.0s.jpg, frame_0.5s.jpg, frame_1.0s.jpg
+            frame_files = sorted(frames_dir.glob("frame_*.jpg"))
+            for frame in frame_files[:3]:
+                if len(images) >= _MAX_IMAGES:
+                    break
+                images.append(str(frame))
+
+    return images
 
 
 # ── Database helpers ──────────────────────────────────────────────────────────

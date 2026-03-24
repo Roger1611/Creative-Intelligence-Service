@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse, parse_qs
 
-from config import RAW_DIR, get_connection, init_db
+from config import MAX_ADS_DEFAULT, RAW_DIR, get_connection, init_db
 from scrapers.utils import load_selectors, random_delay, random_user_agent, safe_brand_slug
 
 logger = logging.getLogger(__name__)
@@ -181,13 +181,11 @@ def _playwright_scrape(
             browser.close()
             return []
 
-        # Scroll down fully to load all ad cards (3-4 scrolls, 2s between)
-        for scroll_round in range(4):
-            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            time.sleep(2)
-            logger.debug("Full scroll %d/4", scroll_round + 1)
-        page.evaluate("window.scrollTo(0, 0)")
-        time.sleep(1)
+        # Scroll down incrementally to load all lazy-loaded ad cards.
+        # Meta Ad Library uses infinite scroll — cards below the fold
+        # don't exist in the DOM until scrolled to.
+        effective_max = max_ads if max_ads > 0 else MAX_ADS_DEFAULT
+        _scroll_to_load_all_cards(page, selectors, target_count=effective_max)
 
         # ── Find all "See ad details" buttons on cards ──────────────────
         detail_links = _find_detail_buttons(page, selectors)
@@ -439,13 +437,14 @@ def _extract_ad_via_modal(
 
     # Video download + whisper + frames
     transcript = None
+    transcript_language = None
     frames_path = None
     if video_url:
         video_path = ad_dir / "video.mp4"
         dl_path = _download_via_playwright(ctx, video_url, video_path)
         if dl_path:
             # Transcribe with faster-whisper
-            transcript = _transcribe_video(Path(dl_path))
+            transcript, transcript_language = _transcribe_video(Path(dl_path))
 
             # Extract frames with ffmpeg
             frames_dir = ad_dir / "frames"
@@ -476,6 +475,7 @@ def _extract_ad_via_modal(
         "creative_type":  creative_type,
         "video_url":      video_url,
         "transcript":     transcript,
+        "transcript_language": transcript_language,
         "frames_path":    frames_path,
         "scraped_at":     datetime.utcnow().isoformat(),
     }
@@ -789,23 +789,27 @@ def _download_via_playwright(ctx, url: str, dest: Path) -> Optional[str]:
 # Whisper transcription
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _transcribe_video(video_path: Path) -> Optional[str]:
-    """Transcribe speech from video using faster-whisper. Auto-detects language."""
+def _transcribe_video(video_path: Path) -> tuple[Optional[str], Optional[str]]:
+    """Transcribe speech from video using faster-whisper. Auto-detects language.
+
+    Returns (transcript_text, detected_language) — e.g. ("hello world", "en").
+    """
     try:
         from faster_whisper import WhisperModel
     except ImportError:
         logger.warning("faster-whisper not installed — skipping transcription")
-        return None
+        return None, None
 
     if not video_path.exists():
-        return None
+        return None, None
 
     try:
         logger.info("Transcribing %s with faster-whisper...", video_path.name)
         model = WhisperModel("base", device="cpu", compute_type="int8")
         segments, info = model.transcribe(str(video_path), beam_size=5)
 
-        logger.info("Detected language: %s (prob=%.2f)", info.language, info.language_probability)
+        detected_lang = info.language
+        logger.info("Detected language: %s (prob=%.2f)", detected_lang, info.language_probability)
 
         transcript_parts = []
         for segment in segments:
@@ -813,11 +817,11 @@ def _transcribe_video(video_path: Path) -> Optional[str]:
 
         transcript = " ".join(transcript_parts)
         logger.info("Transcript (%d chars): %s", len(transcript), transcript[:200])
-        return transcript if transcript else None
+        return (transcript if transcript else None, detected_lang)
 
     except Exception as exc:
         logger.warning("Transcription failed: %s", exc)
-        return None
+        return None, None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1273,20 +1277,54 @@ def _dismiss_cookie_banner(page) -> None:
         pass
 
 
-def _scroll_to_load_more(page, scroll_pause: float = 1.5) -> None:
-    page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-    time.sleep(scroll_pause)
-    random_delay()
+def _scroll_to_load_all_cards(
+    page, selectors: dict, target_count: int = 200,
+    scroll_pause: float = 2.5, max_stale_rounds: int = 3,
+) -> int:
+    """Scroll down incrementally until no new ad cards appear or *target_count* reached.
 
+    Counts cards by the number of 'See ad details' buttons visible in the DOM.
+    Returns the final card count.
+    """
+    prev_count = 0
+    stale_rounds = 0
 
-def _incremental_scroll(page, rounds: int = 5, pause: float = 2.0) -> None:
-    """Scroll down incrementally to trigger lazy-loaded ad cards."""
-    for i in range(rounds):
+    for round_num in range(1, 100):  # hard safety cap
+        # Count current cards
+        current_count = page.evaluate(
+            """() => Array.from(document.querySelectorAll('[role="button"]'))
+                       .filter(el => el.innerText.trim() === 'See ad details').length"""
+        )
+
+        if current_count >= target_count:
+            logger.info("Scroll: reached target (%d >= %d). Stopping.", current_count, target_count)
+            break
+
+        if current_count == prev_count:
+            stale_rounds += 1
+            if stale_rounds >= max_stale_rounds:
+                logger.info("Scroll: no new cards after %d rounds (%d total). End of results.",
+                            max_stale_rounds, current_count)
+                break
+        else:
+            stale_rounds = 0
+
+        prev_count = current_count
+        logger.debug("Scroll round %d: %d cards loaded (target=%d)", round_num, current_count, target_count)
+
         page.evaluate("window.scrollBy(0, window.innerHeight)")
-        time.sleep(pause)
-        logger.debug("Incremental scroll %d/%d", i + 1, rounds)
+        time.sleep(scroll_pause)
+
+    # Scroll back to top before processing
     page.evaluate("window.scrollTo(0, 0)")
     time.sleep(1)
+
+    final_count = page.evaluate(
+        """() => Array.from(document.querySelectorAll('[role="button"]'))
+                   .filter(el => el.innerText.trim() === 'See ad details').length"""
+    )
+    logger.info("Scroll complete: %d 'See ad details' buttons loaded.", final_count)
+    return final_count
 
 
 def _wait_for_any_card(page, selectors: dict, timeout: int = 15_000):
@@ -1392,17 +1430,19 @@ def _upsert_ads(brand_id: int, ads: list[dict]) -> int:
                        brand_id, ad_library_id, creative_type, ad_copy,
                        cta_type, image_path, thumbnail_url,
                        start_date, last_seen_date, is_active, scraped_at,
-                       caption, transcript, frames_path, video_url
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       caption, transcript, transcript_language,
+                       frames_path, video_url
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(ad_library_id) DO UPDATE SET
-                       last_seen_date = excluded.last_seen_date,
-                       image_path     = COALESCE(excluded.image_path, image_path),
-                       is_active      = excluded.is_active,
-                       scraped_at     = excluded.scraped_at,
-                       caption        = COALESCE(excluded.caption, caption),
-                       transcript     = COALESCE(excluded.transcript, transcript),
-                       frames_path    = COALESCE(excluded.frames_path, frames_path),
-                       video_url      = COALESCE(excluded.video_url, video_url)""",
+                       last_seen_date     = excluded.last_seen_date,
+                       image_path         = COALESCE(excluded.image_path, image_path),
+                       is_active          = excluded.is_active,
+                       scraped_at         = excluded.scraped_at,
+                       caption            = COALESCE(excluded.caption, caption),
+                       transcript         = COALESCE(excluded.transcript, transcript),
+                       transcript_language = COALESCE(excluded.transcript_language, transcript_language),
+                       frames_path        = COALESCE(excluded.frames_path, frames_path),
+                       video_url          = COALESCE(excluded.video_url, video_url)""",
                 (
                     brand_id,
                     ad["ad_library_id"],
@@ -1417,6 +1457,7 @@ def _upsert_ads(brand_id: int, ads: list[dict]) -> int:
                     ad.get("scraped_at"),
                     ad.get("caption"),
                     ad.get("transcript"),
+                    ad.get("transcript_language"),
                     ad.get("frames_path"),
                     ad.get("video_url"),
                 ),

@@ -125,6 +125,21 @@ pytest tests/ -v
 - Duplicate detection by video URL: copies existing frames, skips re-download
 - Full transcript stored in DB (no truncation)
 
+## Analysis Layer Refactor (2026-03-24)
+
+Aligned all downstream modules with the enriched scraper output (transcripts, frames, video_url, transcript_language).
+
+- **db/schema.sql**: Added `transcript_language TEXT` column to `ads` table
+- **config.py**: Added `MAX_ADS_DEFAULT` (200) for scroll cap; added `transcript_language` to migration columns
+- **scrapers/meta_ad_library.py**: Infinite scroll replaces fixed 4-scroll; `_transcribe_video` returns `(transcript, language)` tuple; `_upsert_ads` persists `transcript_language`
+- **analysis/structurer.py**: `_upsert_ads` now persists caption, transcript, transcript_language, frames_path, video_url; Pass 4 dedup by video_url; video-with-transcript bonus in diversity score
+- **analysis/fatigue_scorer.py**: `_concentration_penalty` reduced 20% when video+transcript present
+- **llm/client.py**: `analyze_ad` accepts `str | list[str]` for image_path with validation filtering
+- **llm/chains.py**: Fetches frames_path/transcript/transcript_language/video_url/thumbnail_url; appends `[VIDEO TRANSCRIPT]` to ad_copy; `_collect_ad_images()` sends thumbnail + up to 3 frames (max 4 images)
+- **llm/prompts/competitor_deconstruction.txt**: Added `spoken_hook`, `language_mix`, `transcript_cta` fields; transcript analysis rules for hindi/english code-switching
+- **deliverables/audit_generator.py**: Brand snapshot shows video transcript count in format mix line
+- Verified: 78 tests pass, 123/123 ads analyzed with 0 LLM failures, audit PDF renders correctly
+
 ## When Compacting
 
 Always preserve: the full list of pipeline stages, the Build Status table above, the database schema design, any scraper selector changes made during the session, and the current state of which modules are built vs pending.

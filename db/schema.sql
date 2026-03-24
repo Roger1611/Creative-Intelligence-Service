@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS ads (
                     ) VIRTUAL,
     caption         TEXT,
     transcript      TEXT,
+    transcript_language TEXT,
     frames_path     TEXT,
     video_url       TEXT,
     is_active       INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0,1)),
