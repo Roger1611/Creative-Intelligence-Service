@@ -113,7 +113,28 @@ def init_db() -> None:
     with get_connection() as conn:
         conn.executescript(schema)
 
+    # Migrate: add new columns to ads table if missing (for existing DBs)
+    _migrate_ads_table()
+
     logger.info("Database initialised at %s", DB_PATH)
+
+
+def _migrate_ads_table() -> None:
+    """Add caption/transcript/frames_path/video_url columns if they don't exist."""
+    new_columns = {
+        "caption": "TEXT",
+        "transcript": "TEXT",
+        "frames_path": "TEXT",
+        "video_url": "TEXT",
+    }
+    with get_connection() as conn:
+        existing = {
+            row[1] for row in conn.execute("PRAGMA table_info(ads)").fetchall()
+        }
+        for col, typ in new_columns.items():
+            if col not in existing:
+                conn.execute(f"ALTER TABLE ads ADD COLUMN {col} {typ}")
+                logger.info("Migrated ads table: added column '%s'", col)
 
 
 if __name__ == "__main__":

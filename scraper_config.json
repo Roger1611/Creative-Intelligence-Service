@@ -1,3 +1,4 @@
+
 {
   "_comment": "All CSS/XPath selectors live here. Update this file when Meta or Instagram changes their DOM — no Python changes needed.",
 
@@ -45,6 +46,22 @@
     "autocomplete_advertisers_heading": "[role='heading']:has-text('Advertisers')",
     "autocomplete_advertiser_entry": "[aria-describedby^='pageID:']",
 
+    "see_ad_details_link": "a[href*='/ads/library/']",
+    "see_ad_details_text": "See ad details",
+
+    "modal_container": "[role='dialog']",
+    "modal_close_button": "[role='dialog'] [aria-label='Close']",
+    "modal_close_button_alt": "[role='dialog'] button:has(svg)",
+
+    "modal_caption": "[role='dialog'] div[style*='webkit-line-clamp'], [role='dialog'] div[data-testid='ad-preview-body']",
+    "modal_see_more": "[role='dialog'] div:has-text('See more') >> visible=true",
+    "modal_see_more_alt": "[role='dialog'] span:has-text('See more')",
+
+    "modal_start_date": "[role='dialog'] span:has-text('Started running')",
+    "modal_thumbnail": "[role='dialog'] img[src*='fbcdn']",
+    "modal_thumbnail_alt": "[role='dialog'] img[src*='scontent']",
+    "modal_video": "[role='dialog'] video",
+
     "_selector_notes": {
       "ad_card": "Root container for each ad. Fallback: ad_card_alt uses Facebook's internal CSS classes.",
       "ad_id_link": "The 'See Ad Details' or 'Library ID' link contains ?id=XXXXX in its href.",
@@ -54,7 +71,10 @@
       "video_element": "Present for video/reel creatives.",
       "autocomplete_listbox": "Dropdown that appears after typing in search. Contains 'exact phrase' option + advertiser entries.",
       "autocomplete_advertiser_entry": "Each advertiser in the dropdown has aria-describedby='pageID:XXXXX'. Click the matching one to load only that brand's ads.",
-      "autocomplete_exact_phrase": "The keyword search fallback — only click this if no advertiser match is found."
+      "autocomplete_exact_phrase": "The keyword search fallback — only click this if no advertiser match is found.",
+      "modal_container": "The modal/dialog that opens when clicking 'See ad details'.",
+      "modal_caption": "The ad caption text inside the modal. May be truncated with -webkit-line-clamp.",
+      "modal_see_more": "Expander to reveal full caption text when truncated."
     }
   },
 

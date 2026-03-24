@@ -1,6 +1,9 @@
 """
 scrapers/meta_ad_library.py — Meta Ad Library scraper (Playwright).
 
+Extracts ad content by clicking "See ad details" on each card, opening the
+modal, and extracting caption/thumbnail/video from inside the modal.
+
 Meta's DOM changes frequently. ALL selectors live in scraper_config.json
 under the "meta_ad_library" key — no selectors are hardcoded here.
 
@@ -8,9 +11,9 @@ Fallback: if scraping fails entirely, the pipeline reads
   data/raw/{brand_name}_manual.json  (user-supplied JSON in the same schema).
 
 CLI usage:
-  python -m scrapers.meta_ad_library --brand "Mamaearth" \\
-      --competitors "Plum,WOW Skin Science,mCaffeine" \\
-      --country IN --max-pages 5
+  python -m scrapers.meta_ad_library --brand "Just Herbs" --max-ads 1
+  python -m scrapers.meta_ad_library --brand "Mamaearth" \
+      --competitors "Plum,WOW Skin Science" --country IN --max-pages 5
 """
 
 from __future__ import annotations
@@ -18,7 +21,9 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import re
+import subprocess
 import sys
 import time
 from datetime import datetime, date
@@ -27,7 +32,7 @@ from typing import Optional
 from urllib.parse import urlparse, parse_qs
 
 from config import RAW_DIR, get_connection, init_db
-from scrapers.utils import download_image, load_selectors, random_delay, random_user_agent
+from scrapers.utils import load_selectors, random_delay, random_user_agent, safe_brand_slug
 
 logger = logging.getLogger(__name__)
 
@@ -47,30 +52,33 @@ def run(
     country:     str = "IN",
     category:    str | None = None,
     max_pages:   int = 5,
+    max_ads:     int = 0,
 ) -> dict:
     """
     Scrape Meta Ad Library for *brand_name* and any *competitors*.
+
+    Args:
+        max_ads: If > 0, stop after extracting this many ads per brand.
+                 0 means no limit (use max_pages for pagination control).
 
     Returns:
         {
             "brand":       [<ad_dict>, ...],
             "competitors": {<name>: [<ad_dict>, ...], ...},
         }
-
-    Each ad dict matches the `ads` table schema plus a `brand_name` key.
-    Downloaded thumbnails are saved to data/raw/{safe_brand_name}/.
     """
     results: dict = {"brand": [], "competitors": {}}
     selectors = _load_selectors_safe()
 
     logger.info("=== Meta Ad Library scrape: %s [country=%s] ===", brand_name, country)
     results["brand"] = _scrape_brand(brand_name, country=country, max_pages=max_pages,
-                                     selectors=selectors)
+                                     max_ads=max_ads, selectors=selectors)
 
     for comp in (competitors or []):
         logger.info("Scraping competitor: %s", comp)
         results["competitors"][comp] = _scrape_brand(
-            comp, country=country, max_pages=max_pages, selectors=selectors
+            comp, country=country, max_pages=max_pages, max_ads=max_ads,
+            selectors=selectors,
         )
         random_delay()
 
@@ -96,12 +104,13 @@ def _scrape_brand(
     brand_name: str,
     country:    str,
     max_pages:  int,
+    max_ads:    int,
     selectors:  dict,
 ) -> list[dict]:
     """Try Playwright scrape; fall back to manual JSON on total failure."""
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
-            return _playwright_scrape(brand_name, country, max_pages, selectors)
+            return _playwright_scrape(brand_name, country, max_pages, max_ads, selectors)
         except Exception as exc:
             wait = _BACKOFF_BASE ** attempt
             logger.warning(
@@ -118,14 +127,18 @@ def _playwright_scrape(
     brand_name: str,
     country:    str,
     max_pages:  int,
+    max_ads:    int,
     selectors:  dict,
 ) -> list[dict]:
     from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
     ads: list[dict] = []
     today_str = date.today().isoformat()
+    brand_slug = safe_brand_slug(brand_name)
 
-    # Navigate to the base Ad Library page (no query — we'll use the autocomplete)
+    debug_dir = Path("debug_output")
+    debug_dir.mkdir(exist_ok=True)
+
     base_url = (
         "https://www.facebook.com/ads/library/"
         f"?active_status=active&ad_type=all"
@@ -134,7 +147,12 @@ def _playwright_scrape(
     )
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False, args=["--no-sandbox"])
+        browser = p.chromium.launch(
+            headless=False,
+            channel="chrome",
+            args=["--no-sandbox", "--start-maximized"],
+            slow_mo=200,
+        )
         ctx = browser.new_context(
             user_agent=random_user_agent(),
             viewport={"width": 1280, "height": 900},
@@ -153,79 +171,82 @@ def _playwright_scrape(
         _search_via_autocomplete(page, brand_name, selectors)
 
         # ── Wait for ad cards to appear in the DOM ──────────────────────
-        debug_dir = Path("debug_output")
-        debug_dir.mkdir(exist_ok=True)
-
         random_delay()
         page.wait_for_load_state("networkidle", timeout=_NAV_TIMEOUT_MS)
 
-        # Explicit wait: at least one "Library ID" text node must appear
         found = _wait_for_any_card(page, selectors, timeout=15_000)
         if not found:
             logger.warning("No ad cards found after 15s wait.")
-            page.screenshot(path=str(debug_dir / "step4_no_cards.png"),
-                            full_page=False)
+            page.screenshot(path=str(debug_dir / "no_cards.png"), full_page=False)
+            browser.close()
+            return []
 
-        # ── Incremental scroll to trigger lazy loading ─────────────────
-        _incremental_scroll(page, rounds=5, pause=2.0)
-
-        page.screenshot(path=str(debug_dir / "step4_before_extraction.png"),
-                        full_page=False)
-        logger.info("DEBUG screenshot: step4_before_extraction.png")
-
-        # ── Extract ads via text-anchor DOM walking ────────────────────
-        seen_ids: set[str] = set()
-        pages_loaded = 0
-
-        while pages_loaded < max_pages:
-            card_dicts = _get_cards(page, selectors)
-            logger.info("Text-anchor extraction found %d cards (page %d)",
-                        len(card_dicts), pages_loaded + 1)
-
-            # Dump first card's real HTML for debugging (once)
-            if pages_loaded == 0 and card_dicts:
-                first = card_dicts[0]
-                if first.get("html_debug"):
-                    html_path = debug_dir / "debug_real_card.html"
-                    html_path.write_text(first["html_debug"], encoding="utf-8")
-                    logger.info("Real card HTML dumped -> %s (%d chars)",
-                                html_path, len(first["html_debug"]))
-
-            new_cards = [c for c in card_dicts
-                         if _card_id_hint(c) not in seen_ids]
-
-            if not new_cards:
-                logger.info("No new cards found -- stopping extraction.")
-                break
-
-            for card_data in new_cards:
-                cid = _card_id_hint(card_data)
-                seen_ids.add(cid)
-                try:
-                    ad = _build_ad_from_card_data(
-                        card_data, brand_name, today_str)
-                    if ad:
-                        ads.append(ad)
-                        logger.debug("Extracted ad %s", ad["ad_library_id"])
-                    else:
-                        logger.debug("Card skipped (no ID): copy=%s",
-                                     (card_data.get("ad_copy") or "")[:60])
-                except Exception as exc:
-                    logger.warning("Card build failed: %s", exc)
-
-            pages_loaded += 1
-            logger.info("Page %d/%d: %d ads collected so far",
-                        pages_loaded, max_pages, len(ads))
-
-            # Scroll to load more
-            prev_count = len(card_dicts)
-            _scroll_to_load_more(page)
+        # Scroll down fully to load all ad cards (3-4 scrolls, 2s between)
+        for scroll_round in range(4):
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             time.sleep(2)
+            logger.debug("Full scroll %d/4", scroll_round + 1)
+        page.evaluate("window.scrollTo(0, 0)")
+        time.sleep(1)
 
-            after_count = len(_get_cards(page, selectors))
-            if after_count <= prev_count:
-                logger.debug("No new cards after scroll -- reached end.")
+        # ── Find all "See ad details" buttons on cards ──────────────────
+        detail_links = _find_detail_buttons(page, selectors)
+        logger.info("Found %d 'See ad details' buttons on page", len(detail_links))
+
+        if not detail_links:
+            logger.warning("No 'See ad details' links found. Dumping page for debug.")
+            page.screenshot(path=str(debug_dir / "no_detail_links.png"), full_page=False)
+            browser.close()
+            return []
+
+        # Limit how many ads to process
+        target_count = max_ads if max_ads > 0 else len(detail_links)
+        target_count = min(target_count, len(detail_links))
+
+        # ── Modal extraction loop ───────────────────────────────────────
+        # Track already-scraped Library IDs to skip duplicates.
+        # Advance button_idx independently — it may skip ahead past dupes.
+        seen_ids: set[str] = set()
+        button_idx = 0
+        max_button_idx = len(detail_links) + target_count  # safety cap
+
+        while len(ads) < target_count and button_idx < max_button_idx:
+            ad_num = len(ads) + 1
+            logger.info("── Processing ad %d/%d (button_idx=%d) ──",
+                        ad_num, target_count, button_idx)
+
+            # Re-query all "See ad details" buttons fresh
+            fresh_buttons = _find_detail_buttons(page, selectors)
+            if button_idx >= len(fresh_buttons):
+                logger.warning("Only %d buttons found, need index %d. Stopping.",
+                               len(fresh_buttons), button_idx)
                 break
+
+            link_info = fresh_buttons[button_idx]
+
+            try:
+                ad = _extract_ad_via_modal(
+                    page, ctx, link_info, brand_name, brand_slug,
+                    today_str, selectors, debug_dir, ad_num,
+                    seen_ids=seen_ids,
+                )
+                if ad:
+                    seen_ids.add(ad["ad_library_id"])
+                    ads.append(ad)
+                    logger.info("Extracted ad %s (%d/%d done)",
+                                ad["ad_library_id"], len(ads), target_count)
+                else:
+                    logger.warning("Ad %d (button_idx=%d): extraction returned nothing",
+                                   ad_num, button_idx)
+            except Exception:
+                import traceback
+                logger.error("Ad %d: modal extraction FAILED — full traceback:\n%s",
+                             ad_num, traceback.format_exc())
+                # Try to close any open modal before continuing
+                _close_modal_safe(page, selectors)
+
+            button_idx += 1
+            random_delay()
 
         browser.close()
 
@@ -233,36 +254,674 @@ def _playwright_scrape(
     return ads
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Modal extraction
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _find_detail_buttons(page, selectors: dict) -> list[dict]:
+    """Find all 'See ad details' buttons by exact visible text.
+
+    Filters to buttons in the main content area (not nav/menu) by checking
+    bounding rect position.
+
+    Returns a list of dicts with:
+      - index: positional index among matched buttons
+      - rect: bounding rectangle for position verification
+    """
+    buttons_data = page.evaluate(
+        """() => {
+            const allBtns = Array.from(document.querySelectorAll('[role="button"]'))
+                .filter(el => {
+                    const text = el.innerText.trim();
+                    return text === 'See ad details';
+                });
+            const results = [];
+            for (let i = 0; i < allBtns.length; i++) {
+                const rect = allBtns[i].getBoundingClientRect();
+                results.push({
+                    index: i,
+                    rect: {x: rect.x, y: rect.y, width: rect.width, height: rect.height},
+                    text: allBtns[i].innerText.trim(),
+                });
+            }
+            return results;
+        }"""
+    )
+
+    # Log each button's position for debugging
+    for btn in buttons_data:
+        r = btn.get("rect", {})
+        logger.info("  Button %d: text='%s' pos=(%d, %d) size=%dx%d",
+                     btn["index"], btn.get("text", ""), r.get("x", 0), r.get("y", 0),
+                     r.get("width", 0), r.get("height", 0))
+
+    return buttons_data
+
+
+def _extract_ad_via_modal(
+    page, ctx, link_info: dict, brand_name: str, brand_slug: str,
+    today_str: str, selectors: dict, debug_dir: Path, ad_num: int,
+    seen_ids: set[str] | None = None,
+) -> Optional[dict]:
+    """Extract ad data: read Library ID + start date from the card listing,
+    then click 'See ad details' to get caption/video/thumbnail."""
+    from playwright.sync_api import TimeoutError as PWTimeout
+
+    btn_index = link_info["index"]
+    btn_rect = link_info.get("rect", {})
+
+    logger.info("Processing card at button index %d, pos=(%d,%d)",
+                btn_index, btn_rect.get("x", 0), btn_rect.get("y", 0))
+
+    # ── Step 1: Read Library ID from the card BEFORE clicking ─────────
+    # The Nth "Library ID:" span on the listing corresponds to the Nth button.
+    card_info = page.evaluate(
+        """(btnIndex) => {
+            // Get all Library ID spans on the page (visible on each card)
+            const idSpans = Array.from(document.querySelectorAll('span'))
+                .filter(el => el.innerText.trim().startsWith('Library ID:'));
+
+            // Get all "Started running on" spans
+            const dateSpans = Array.from(document.querySelectorAll('span'))
+                .filter(el => el.innerText.trim().startsWith('Started running on'));
+
+            const libId = btnIndex < idSpans.length
+                ? idSpans[btnIndex].innerText.replace('Library ID:', '').trim()
+                : null;
+
+            const startDate = btnIndex < dateSpans.length
+                ? dateSpans[btnIndex].innerText.trim()
+                : null;
+
+            return { libraryId: libId, startDate: startDate };
+        }""",
+        btn_index,
+    )
+
+    ad_library_id = card_info.get("libraryId") if card_info else None
+    start_date_raw = card_info.get("startDate") if card_info else None
+
+    logger.info("Card %d — Library ID: %s, Start date: %s",
+                btn_index, ad_library_id, start_date_raw)
+
+    if not ad_library_id:
+        logger.warning("Could not read Library ID from card at index %d", btn_index)
+        return None
+
+    # ── Duplicate check — skip if already scraped in this session ─────
+    if seen_ids and ad_library_id in seen_ids:
+        logger.warning("DUPLICATE: Library ID %s already scraped — skipping", ad_library_id)
+        return None
+
+    start_date = _parse_date_from_text(start_date_raw) if start_date_raw else None
+
+    # ── Step 2: Scroll to and click "See ad details" button ───────────
+    click_info = page.evaluate(
+        """(btnIndex) => {
+            const allBtns = Array.from(document.querySelectorAll('[role="button"]'))
+                .filter(el => el.innerText.trim() === 'See ad details');
+            if (btnIndex >= allBtns.length) return null;
+
+            const btn = allBtns[btnIndex];
+            const rect = btn.getBoundingClientRect();
+            btn.scrollIntoView({behavior: 'smooth', block: 'center'});
+            return {
+                text: btn.innerText.trim(),
+                x: rect.x, y: rect.y,
+                width: rect.width, height: rect.height,
+            };
+        }""",
+        btn_index,
+    )
+    if not click_info:
+        logger.warning("Could not find button at index %d for clicking", btn_index)
+        return None
+
+    time.sleep(0.5)
+
+    # Click the button
+    page.evaluate(
+        """(btnIndex) => {
+            const allBtns = Array.from(document.querySelectorAll('[role="button"]'))
+                .filter(el => el.innerText.trim() === 'See ad details');
+            if (btnIndex < allBtns.length) {
+                allBtns[btnIndex].click();
+            }
+        }""",
+        btn_index,
+    )
+
+    # ── Step 3: Wait for expanded details to render ───────────────────
+    page.wait_for_timeout(2000)
+
+    # Debug screenshot: ad details open
+    page.screenshot(path=str(debug_dir / f"modal_open_{ad_num}.png"), full_page=False)
+    logger.info("Screenshot: modal_open_%d.png", ad_num)
+
+    # ── Step 4: Extract caption, video, thumbnail from expanded view ──
+
+    # Caption — expand "See more" inside the Nth ._7jyr, then read full text
+    _expand_caption(page, selectors, card_index=btn_index)
+    time.sleep(0.5)
+
+    caption = _extract_caption_from_modal(page, selectors, card_index=btn_index)
+    logger.info("Caption: %s", (caption[:80] + "...") if caption and len(caption) > 80 else caption)
+
+    # Video URL + Thumbnail — scoped to the Nth card's container
+    video_url, thumbnail_url = _extract_modal_video_and_thumbnail(page, card_index=btn_index)
+    logger.info("Video URL (card %d): %s", btn_index,
+                (video_url[:80] + "...") if video_url and len(video_url) > 80 else video_url)
+    logger.info("Thumbnail URL (card %d): %s", btn_index, bool(thumbnail_url))
+
+    # Creative type inference
+    creative_type = "video" if video_url else "static"
+
+    # CTA
+    cta_type = _extract_modal_cta(page)
+
+    # Debug screenshot: before close
+    page.screenshot(path=str(debug_dir / f"modal_before_close_{ad_num}.png"), full_page=False)
+    logger.info("Screenshot: modal_before_close_%d.png", ad_num)
+
+    # ── Step 5: Close the expanded details ────────────────────────────
+    _close_modal_safe(page, selectors)
+    time.sleep(1)
+
+    # ── Step 5: Download thumbnail and video ────────────────────────────
+    ad_dir = RAW_DIR / brand_slug / ad_library_id
+    ad_dir.mkdir(parents=True, exist_ok=True)
+
+    # Thumbnail download (via Playwright's context request for session auth)
+    image_path = None
+    if thumbnail_url:
+        thumb_path = ad_dir / "thumbnail.jpg"
+        image_path = _download_via_playwright(ctx, thumbnail_url, thumb_path)
+
+    # Video download + whisper + frames
+    transcript = None
+    frames_path = None
+    if video_url:
+        video_path = ad_dir / "video.mp4"
+        dl_path = _download_via_playwright(ctx, video_url, video_path)
+        if dl_path:
+            # Transcribe with faster-whisper
+            transcript = _transcribe_video(Path(dl_path))
+
+            # Extract frames with ffmpeg
+            frames_dir = ad_dir / "frames"
+            frames_dir.mkdir(parents=True, exist_ok=True)
+            _extract_frames(Path(dl_path), frames_dir)
+            frames_path = str(frames_dir)
+
+            # Delete video to save disk space
+            try:
+                Path(dl_path).unlink()
+                logger.info("Deleted video file: %s", dl_path)
+            except Exception as exc:
+                logger.warning("Could not delete video: %s", exc)
+
+    # ── Build the ad dict ───────────────────────────────────────────────
+    return {
+        "ad_library_id":  ad_library_id,
+        "brand_name":     brand_name,
+        "ad_copy":        caption,  # legacy field — same as caption
+        "caption":        caption,
+        "cta_type":       cta_type,
+        "thumbnail_url":  thumbnail_url or "",
+        "image_path":     image_path,
+        "start_date":     start_date,
+        "last_seen_date": today_str,
+        "duration_days":  _compute_duration(start_date, today_str),
+        "is_active":      True,
+        "creative_type":  creative_type,
+        "video_url":      video_url,
+        "transcript":     transcript,
+        "frames_path":    frames_path,
+        "scraped_at":     datetime.utcnow().isoformat(),
+    }
+
+
+def _debug_dump_modal(page, debug_dir: Path, ad_num: int) -> None:
+    """Find the ad detail container by walking up from 'Library ID:' span and dump its HTML."""
+    html_dump = page.evaluate(
+        """() => {
+            // Find the span containing "Library ID:"
+            const spans = document.querySelectorAll('span');
+            let anchor = null;
+            for (const s of spans) {
+                if (s.innerText.trim().startsWith('Library ID:')) {
+                    anchor = s;
+                    break;
+                }
+            }
+            if (!anchor) return {selector: 'none (no Library ID span)', html: '', textLen: 0};
+
+            // Walk up to find a substantial container (the ad detail panel)
+            let container = anchor;
+            for (let i = 0; i < 20; i++) {
+                if (!container.parentElement) break;
+                container = container.parentElement;
+                const text = container.innerText || '';
+                // Stop when we find a container that has caption-like content
+                // (Library ID + Started running + substantial text)
+                if (text.includes('Library ID:') &&
+                    text.includes('Started running') &&
+                    text.length > 500) {
+                    break;
+                }
+            }
+
+            return {
+                selector: 'walked-up-from-Library-ID (' + container.tagName + ')',
+                html: container.innerHTML,
+                textLen: (container.innerText || '').length,
+            };
+        }"""
+    )
+
+    sel_used = html_dump.get("selector", "none")
+    html_content = html_dump.get("html", "")
+    text_len = html_dump.get("textLen", 0)
+
+    logger.info("DEBUG ad detail container via '%s' — innerHTML %d chars, innerText %d chars",
+                sel_used, len(html_content), text_len)
+
+    dump_path = debug_dir / f"modal_html_dump_{ad_num}.html"
+    dump_path.write_text(html_content, encoding="utf-8")
+    logger.info("DEBUG ad detail HTML dumped → %s", dump_path)
+
+
+def _extract_id_from_modal(page, selectors: dict) -> Optional[str]:
+    """Extract ad library ID by finding the span with 'Library ID:' on the page."""
+    result = page.evaluate(
+        """() => {
+            const span = Array.from(document.querySelectorAll('span'))
+                .find(el => el.innerText.trim().startsWith('Library ID:'));
+            if (span) {
+                return span.innerText.replace('Library ID:', '').trim() || null;
+            }
+            return null;
+        }"""
+    )
+    return result
+
+
+def _extract_modal_start_date(page) -> Optional[str]:
+    """Extract start date by finding span/div with 'Started running on' on the page."""
+    result = page.evaluate(
+        """() => {
+            const els = [
+                ...document.querySelectorAll('span'),
+                ...document.querySelectorAll('div'),
+            ];
+            for (const el of els) {
+                const t = el.innerText.trim();
+                if (t.startsWith('Started running on')) return t;
+            }
+            return null;
+        }"""
+    )
+    return result
+
+
+def _expand_caption(page, selectors: dict, card_index: int = 0) -> None:
+    """Click 'See more' inside the Nth caption div (._7jyr) to reveal full text."""
+    try:
+        expanded = page.evaluate(
+            """(cardIdx) => {
+                const captionDivs = document.querySelectorAll('._7jyr');
+                if (cardIdx >= captionDivs.length) return false;
+                const captionDiv = captionDivs[cardIdx];
+
+                // Find "See more" inside it
+                const seeMore = Array.from(captionDiv.querySelectorAll('*'))
+                    .find(el => el.innerText.trim().toLowerCase() === 'see more'
+                             || el.innerText.trim() === 'See more');
+                if (seeMore) {
+                    seeMore.click();
+                    return true;
+                }
+                return false;
+            }""",
+            card_index,
+        )
+        if expanded:
+            logger.info("Expanded truncated caption via 'See more' click (card %d)", card_index)
+            time.sleep(1)
+        else:
+            logger.debug("No 'See more' found in caption %d — may already be full", card_index)
+    except Exception as exc:
+        logger.debug("Caption expansion attempt failed: %s", exc)
+
+
+def _extract_caption_from_modal(page, selectors: dict, card_index: int = 0) -> Optional[str]:
+    """Extract the ad caption from the Nth div._7jyr on the page."""
+    caption = page.evaluate(
+        """(cardIdx) => {
+            const captionDivs = document.querySelectorAll('._7jyr');
+            if (cardIdx < captionDivs.length) {
+                return captionDivs[cardIdx].innerText.trim() || null;
+            }
+            return null;
+        }""",
+        card_index,
+    )
+    return caption
+
+
+def _extract_modal_video_and_thumbnail(page, card_index: int = 0) -> tuple[Optional[str], Optional[str]]:
+    """Extract video URL and thumbnail URL from the Nth ad card.
+
+    Scopes extraction to the Nth card by finding the Nth video container
+    or the Nth large image — not the first on the whole page.
+    """
+    result = page.evaluate(
+        """(cardIdx) => {
+            // Find the Nth video container (each card has its own)
+            const videoContainers = document.querySelectorAll(
+                '[data-testid="ad-content-body-video-container"]');
+
+            if (cardIdx < videoContainers.length) {
+                const container = videoContainers[cardIdx];
+                const video = container.querySelector('video');
+                if (video) {
+                    let videoUrl = video.src || video.currentSrc || null;
+                    const poster = video.poster || null;
+                    if (!videoUrl) {
+                        const source = video.querySelector('source');
+                        if (source && source.src) return [source.src, poster];
+                    }
+                    return [videoUrl, poster];
+                }
+            }
+
+            // Fallback: find the Nth <video> on the page
+            const allVideos = document.querySelectorAll('video');
+            if (cardIdx < allVideos.length) {
+                const video = allVideos[cardIdx];
+                let videoUrl = video.src || video.currentSrc || null;
+                const poster = video.poster || null;
+                if (!videoUrl) {
+                    const source = video.querySelector('source');
+                    if (source && source.src) return [source.src, poster];
+                }
+                return [videoUrl, poster];
+            }
+
+            // Static ad — find the Nth large <img> (skip logos/icons < 100px)
+            const largeImgs = Array.from(document.querySelectorAll('img'))
+                .filter(img => {
+                    const w = img.naturalWidth || img.width || 0;
+                    const h = img.naturalHeight || img.height || 0;
+                    return w > 100 && h > 100 && img.src;
+                });
+            if (cardIdx < largeImgs.length) {
+                return [null, largeImgs[cardIdx].src];
+            }
+
+            return [null, null];
+        }""",
+        card_index,
+    )
+    if result and len(result) == 2:
+        return result[0], result[1]
+    return None, None
+
+
+def _extract_modal_cta(page) -> Optional[str]:
+    """Extract CTA button text from the page."""
+    cta = page.evaluate(
+        """() => {
+            const text = document.body.innerText || '';
+            const m = text.match(
+                /\\b(Shop [Nn]ow|Learn [Mm]ore|Sign [Uu]p|Buy [Nn]ow|Get [Oo]ffer|Book [Nn]ow|Download|Subscribe|Order [Nn]ow|Contact [Uu]s|Apply [Nn]ow|Watch [Mm]ore|Send [Mm]essage|Get [Qq]uote|Install [Nn]ow|Use [Aa]pp|See [Mm]enu)\\b/
+            );
+            return m ? m[1] : null;
+        }"""
+    )
+    return cta
+
+
+def _close_modal_safe(page, selectors: dict) -> None:
+    """Close the ad detail view by clicking the Close/X button, then verify
+    we're back on the listing page by waiting for 'See ad details' buttons."""
+    closed = False
+
+    # Strategy 1: Find a close button by aria-label="Close"
+    try:
+        close_btn = page.query_selector('[aria-label="Close"]')
+        if close_btn and close_btn.is_visible():
+            close_btn.click()
+            logger.info("Closed ad details via aria-label='Close' button")
+            closed = True
+    except Exception as exc:
+        logger.debug("aria-label Close attempt failed: %s", exc)
+
+    # Strategy 2: Find a button with × or ✕ text
+    if not closed:
+        try:
+            found = page.evaluate(
+                """() => {
+                    const btns = document.querySelectorAll('[role="button"], button');
+                    for (const btn of btns) {
+                        const t = btn.innerText.trim();
+                        if (t === '×' || t === '✕' || t === 'X' || t === '✖') {
+                            btn.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }"""
+            )
+            if found:
+                logger.info("Closed ad details via ×/✕ button text")
+                closed = True
+        except Exception as exc:
+            logger.debug("×/✕ button attempt failed: %s", exc)
+
+    # Strategy 3: Escape key as last resort
+    if not closed:
+        try:
+            page.keyboard.press("Escape")
+            logger.info("Pressed Escape to close ad details")
+            time.sleep(0.5)
+        except Exception:
+            pass
+
+    # Wait for listing page to stabilize — "See ad details" buttons should reappear
+    _wait_for_listing_buttons(page, min_buttons=1, timeout=10_000)
+
+
+def _wait_for_listing_buttons(page, min_buttons: int = 1, timeout: int = 10_000) -> bool:
+    """Wait until at least *min_buttons* 'See ad details' buttons are visible,
+    confirming we're back on the listing page."""
+    import time as _time
+    deadline = _time.time() + timeout / 1000
+    while _time.time() < deadline:
+        count = page.evaluate(
+            """() => {
+                return Array.from(document.querySelectorAll('[role="button"]'))
+                    .filter(el => el.innerText.trim() === 'See ad details').length;
+            }"""
+        )
+        if count >= min_buttons:
+            logger.info("Listing page stable: %d 'See ad details' buttons visible", count)
+            return True
+        _time.sleep(0.5)
+    logger.warning("Timed out waiting for listing buttons to reappear (wanted %d)", min_buttons)
+    return False
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Download (via Playwright session)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _download_via_playwright(ctx, url: str, dest: Path) -> Optional[str]:
+    """Download a file using Playwright's API request context (preserves session cookies).
+
+    Meta CDN URLs require browser session auth — regular requests.get() returns 403.
+    """
+    if not url:
+        return None
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        response = ctx.request.get(url, timeout=60_000)
+        if response.ok:
+            content = response.body()
+            # Cap at 10MB
+            if len(content) > 10 * 1024 * 1024:
+                logger.warning("Download exceeds 10MB limit, skipping: %s", url[:80])
+                return None
+            dest.write_bytes(content)
+            logger.info("Downloaded %d bytes → %s", len(content), dest)
+            return str(dest)
+        else:
+            logger.warning("Download failed (HTTP %d): %s", response.status, url[:80])
+            return None
+    except Exception as exc:
+        logger.warning("Download error: %s — %s", exc, url[:80])
+        return None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Whisper transcription
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _transcribe_video(video_path: Path) -> Optional[str]:
+    """Transcribe speech from video using faster-whisper. Auto-detects language."""
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError:
+        logger.warning("faster-whisper not installed — skipping transcription")
+        return None
+
+    if not video_path.exists():
+        return None
+
+    try:
+        logger.info("Transcribing %s with faster-whisper...", video_path.name)
+        model = WhisperModel("base", device="cpu", compute_type="int8")
+        segments, info = model.transcribe(str(video_path), beam_size=5)
+
+        logger.info("Detected language: %s (prob=%.2f)", info.language, info.language_probability)
+
+        transcript_parts = []
+        for segment in segments:
+            transcript_parts.append(segment.text.strip())
+
+        transcript = " ".join(transcript_parts)
+        logger.info("Transcript (%d chars): %s", len(transcript), transcript[:200])
+        return transcript if transcript else None
+
+    except Exception as exc:
+        logger.warning("Transcription failed: %s", exc)
+        return None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Frame extraction (ffmpeg)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _extract_frames(video_path: Path, frames_dir: Path) -> bool:
+    """Extract 7 frames from the video: 0s, 0.5s, 1s, 1.5s, 2s, 3s, and midpoint."""
+    if not video_path.exists():
+        return False
+
+    # Get video duration for midpoint calculation
+    duration = _get_video_duration(video_path)
+    midpoint = duration / 2 if duration else 5.0
+
+    timestamps = [0, 0.5, 1.0, 1.5, 2.0, 3.0, midpoint]
+
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    extracted = 0
+
+    for ts in timestamps:
+        # Skip timestamps beyond video duration
+        if duration and ts > duration:
+            continue
+
+        frame_name = f"frame_{ts:.1f}s.jpg"
+        frame_path = frames_dir / frame_name
+
+        try:
+            result = subprocess.run(
+                [
+                    "ffmpeg", "-y",
+                    "-ss", f"{ts:.2f}",
+                    "-i", str(video_path),
+                    "-frames:v", "1",
+                    "-q:v", "2",
+                    str(frame_path),
+                ],
+                capture_output=True,
+                timeout=30,
+            )
+            if frame_path.exists() and frame_path.stat().st_size > 0:
+                extracted += 1
+            else:
+                logger.debug("Frame at %.1fs: ffmpeg produced no output", ts)
+        except FileNotFoundError:
+            logger.warning("ffmpeg not found in PATH — cannot extract frames. "
+                           "Install ffmpeg and add to PATH.")
+            return False
+        except subprocess.TimeoutExpired:
+            logger.warning("ffmpeg timeout extracting frame at %.1fs", ts)
+        except Exception as exc:
+            logger.warning("Frame extraction error at %.1fs: %s", ts, exc)
+
+    logger.info("Extracted %d/%d frames → %s", extracted, len(timestamps), frames_dir)
+    return extracted > 0
+
+
+def _get_video_duration(video_path: Path) -> Optional[float]:
+    """Get video duration in seconds using ffprobe."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(video_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return float(result.stdout.strip())
+    except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
+        pass
+    return None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Search & navigation (kept from original)
+# ══════════════════════════════════════════════════════════════════════════════
+
 def _search_via_autocomplete(page, brand_name: str, selectors: dict) -> None:
     """
     Select the ad category, type the brand name into the search box, and select
     the matching advertiser from the autocomplete dropdown.
-
-    Flow:
-    1. Select "All ads" from the ad category dropdown (required before search)
-    2. Find the now-active search input and type brand name char-by-char
-    3. Wait for the autocomplete listbox to appear
-    4. Scan advertiser entries (aria-describedby="pageID:...") for a match
-    5. Click the best matching advertiser
-    6. If none found, fall back to "Search this exact phrase" with a warning
     """
     from playwright.sync_api import TimeoutError as PWTimeout
 
     debug_dir = Path("debug_output")
     debug_dir.mkdir(exist_ok=True)
 
-    # ── Step 1: Select ad category ────────────────────────────────────────────
+    # Step 1: Select ad category
     _select_ad_category(page, selectors)
     page.screenshot(path=str(debug_dir / "step1_after_category.png"), full_page=False)
     logger.info("DEBUG screenshot saved: step1_after_category.png")
 
-    # ── Step 2: Find the search input (now active after category selection) ───
+    # Step 2: Find the search input
     search_input = _find_search_input(page, selectors)
     if not search_input:
         page.screenshot(path=str(debug_dir / "step2_no_input_found.png"), full_page=False)
         raise RuntimeError("Could not find search input on Ad Library page")
 
-    # Click into the search box and type brand name slowly to trigger autocomplete
     search_input.click()
     time.sleep(0.5)
     search_input.fill("")
@@ -275,7 +934,7 @@ def _search_via_autocomplete(page, brand_name: str, selectors: dict) -> None:
     page.screenshot(path=str(debug_dir / "step2_after_typing.png"), full_page=False)
     logger.info("DEBUG screenshot saved: step2_after_typing.png")
 
-    # ── Step 3: Wait for autocomplete dropdown ────────────────────────────────
+    # Step 3: Wait for autocomplete dropdown
     listbox_sel = selectors.get("autocomplete_listbox", "[role='listbox']")
     try:
         page.wait_for_selector(listbox_sel, timeout=8_000, state="visible")
@@ -288,12 +947,12 @@ def _search_via_autocomplete(page, brand_name: str, selectors: dict) -> None:
         search_input.press("Enter")
         return
 
-    time.sleep(1.5)  # Let the full advertiser list populate
+    time.sleep(1.5)
 
     page.screenshot(path=str(debug_dir / "step3_dropdown_visible.png"), full_page=False)
     logger.info("DEBUG screenshot saved: step3_dropdown_visible.png")
 
-    # ── Step 4: Find and click the best advertiser match ──────────────────────
+    # Step 4: Find and click the best advertiser match
     advertiser_sel = selectors.get(
         "autocomplete_advertiser_entry", "[aria-describedby^='pageID:']"
     )
@@ -311,11 +970,10 @@ def _search_via_autocomplete(page, brand_name: str, selectors: dict) -> None:
             best_match.click()
             return
 
-    # ── Fallback: click "Search this exact phrase" ────────────────────────────
+    # Fallback: click "Search this exact phrase"
     logger.warning(
         "No matching advertiser found for '%s' in autocomplete dropdown. "
-        "Falling back to exact phrase keyword search — results may include "
-        "unrelated brands.",
+        "Falling back to exact phrase keyword search.",
         brand_name,
     )
     exact_sel = selectors.get(
@@ -325,25 +983,18 @@ def _search_via_autocomplete(page, brand_name: str, selectors: dict) -> None:
     if exact_btn:
         exact_btn.click()
     else:
-        # Last resort: just press Enter
         logger.warning("Could not find exact phrase button either. Pressing Enter.")
         search_input.press("Enter")
 
 
 def _select_ad_category(page, selectors: dict) -> None:
-    """
-    Select "All ads" from the ad category dropdown.
-
-    The Meta Ad Library page loads with the search input disabled until an ad
-    category is chosen. We try multiple strategies to find and click the
-    category dropdown, then select "All ads".
-    """
+    """Select "All ads" from the ad category dropdown."""
     from playwright.sync_api import TimeoutError as PWTimeout
 
     debug_dir = Path("debug_output")
     debug_dir.mkdir(exist_ok=True)
 
-    # Check if the search input is already active (category pre-selected via URL)
+    # Check if search input is already active
     search_sel = selectors.get("search_input", "input[placeholder*='Search']")
     for check_sel in [
         f"{search_sel}:not([disabled])",
@@ -360,12 +1011,9 @@ def _select_ad_category(page, selectors: dict) -> None:
     logger.info("Search input not yet active — selecting ad category...")
     page.screenshot(path=str(debug_dir / "cat_step0_before_select.png"), full_page=False)
 
-    # ── Strategy 1: Find the category dropdown by label/text association ───────
-    # Look for elements containing "Ad category" text and find a clickable
-    # sibling or child that acts as the dropdown trigger.
+    # Find the category dropdown
     category_combo = None
 
-    # Try: any element whose accessible name or label mentions "category"
     for sel in [
         "[aria-label*='category' i]",
         "[aria-label*='Ad category' i]",
@@ -377,13 +1025,11 @@ def _select_ad_category(page, selectors: dict) -> None:
             logger.debug("Found category element via: %s", sel)
             break
 
-    # Try: role="combobox" elements — identify by surrounding text
     if not category_combo:
         comboboxes = page.query_selector_all("[role='combobox']")
         logger.debug("Found %d combobox elements on page", len(comboboxes))
         for combo in comboboxes:
             try:
-                # Check the text content and surrounding context
                 combo_text = combo.evaluate("""el => {
                     let text = el.innerText || el.textContent || '';
                     let parent = el.closest('div')?.parentElement;
@@ -393,18 +1039,13 @@ def _select_ad_category(page, selectors: dict) -> None:
                 if any(kw in combo_text for kw in
                        ["category", "ad category", "choose an ad"]):
                     category_combo = combo
-                    logger.debug("Found category combobox via parent text match.")
                     break
             except Exception:
                 continue
 
-        # Fallback: second combobox (first is usually country)
         if not category_combo and len(comboboxes) >= 2:
             category_combo = comboboxes[1]
-            logger.debug("Using second combobox as category dropdown (positional).")
 
-    # Try: look for a div/span with "Ad category" or "Choose an ad category"
-    # text and click it directly (some Meta layouts render custom dropdowns)
     if not category_combo:
         for sel in [
             "div:has-text('Ad category') >> visible=true",
@@ -415,32 +1056,24 @@ def _select_ad_category(page, selectors: dict) -> None:
                 el = page.query_selector(sel)
                 if el and el.is_visible():
                     category_combo = el
-                    logger.debug("Found category element via text: %s", sel)
                     break
             except Exception:
                 continue
 
     if not category_combo:
         page.screenshot(path=str(debug_dir / "cat_FAIL_no_dropdown.png"), full_page=False)
-        logger.warning(
-            "Could not find category dropdown. Screenshot saved. "
-            "Proceeding anyway — search input may not be active."
-        )
+        logger.warning("Could not find category dropdown. Proceeding anyway.")
         return
 
-    # ── Click the category dropdown to open it ─────────────────────────────────
     logger.info("Clicking category dropdown...")
     category_combo.scroll_into_view_if_needed()
     category_combo.click()
     time.sleep(1.5)
 
     page.screenshot(path=str(debug_dir / "cat_step1_dropdown_open.png"), full_page=False)
-    logger.info("DEBUG screenshot: cat_step1_dropdown_open.png")
 
-    # ── Select "All ads" from the dropdown options ─────────────────────────────
+    # Select "All ads"
     all_ads_option = None
-
-    # Try multiple selectors for the "All ads" option
     for sel in [
         selectors.get("category_all_ads", "li[role='option']:has-text('All ads')"),
         "[role='option']:has-text('All ads')",
@@ -453,15 +1086,12 @@ def _select_ad_category(page, selectors: dict) -> None:
             el = page.query_selector(sel)
             if el and el.is_visible():
                 all_ads_option = el
-                logger.debug("Found 'All ads' option via: %s", sel)
                 break
         except Exception:
             continue
 
-    # Fallback: scan all role='option' elements for text containing "All ads"
     if not all_ads_option:
         options = page.query_selector_all("[role='option']")
-        logger.debug("Scanning %d role='option' elements for 'All ads'", len(options))
         for opt in options:
             try:
                 text = opt.inner_text().strip().lower()
@@ -474,34 +1104,25 @@ def _select_ad_category(page, selectors: dict) -> None:
     if all_ads_option:
         all_ads_option.click()
         logger.info("Selected 'All ads' from category dropdown.")
-        time.sleep(2)  # Wait for the search input to become active
+        time.sleep(2)
     else:
         page.screenshot(path=str(debug_dir / "cat_FAIL_no_all_ads.png"), full_page=False)
-        logger.warning(
-            "Could not find 'All ads' option. Trying keyboard: ArrowDown + Enter."
-        )
+        logger.warning("Could not find 'All ads' option. Trying keyboard fallback.")
         category_combo.press("ArrowDown")
         time.sleep(0.3)
         category_combo.press("Enter")
         time.sleep(2)
 
     page.screenshot(path=str(debug_dir / "cat_step2_after_select.png"), full_page=False)
-    logger.info("DEBUG screenshot: cat_step2_after_select.png")
 
 
 def _find_search_input(page, selectors: dict):
-    """Locate the visible AND enabled search input on the Ad Library page.
-
-    After category selection the search box transitions from disabled/greyed-out
-    to active. This function waits for that transition, checking both visibility
-    and enabled state.
-    """
+    """Locate the visible AND enabled search input on the Ad Library page."""
     from playwright.sync_api import TimeoutError as PWTimeout
 
     debug_dir = Path("debug_output")
     debug_dir.mkdir(exist_ok=True)
 
-    # Selectors to try, in priority order
     candidates = [
         "input[type='search']:not([disabled])",
         selectors.get("search_input", "input[placeholder*='Search']"),
@@ -510,7 +1131,6 @@ def _find_search_input(page, selectors: dict):
         "input[placeholder*='advertiser']",
     ]
 
-    # First pass: wait for an enabled search input (up to 15s total)
     for sel in candidates:
         try:
             page.wait_for_selector(sel, timeout=8_000, state="visible")
@@ -519,18 +1139,16 @@ def _find_search_input(page, selectors: dict):
                 logger.info("Found enabled search input via: %s", sel)
                 return inp
             elif inp and inp.is_visible():
-                # Input exists but disabled — wait a bit for it to activate
                 logger.debug("Input found but disabled via %s, waiting...", sel)
                 for _ in range(10):
                     time.sleep(0.5)
                     if inp.is_enabled():
                         logger.info("Search input became enabled via: %s", sel)
                         return inp
-                logger.debug("Input stayed disabled via: %s", sel)
         except PWTimeout:
             continue
 
-    # Second pass: scan all visible inputs for a search-like one that's enabled
+    # Scan all visible inputs
     logger.debug("Primary selectors exhausted — scanning all inputs...")
     all_inputs = page.query_selector_all("input")
     for inp in all_inputs:
@@ -549,34 +1167,22 @@ def _find_search_input(page, selectors: dict):
             )
             if is_search:
                 if disabled is not None:
-                    logger.debug("Found search input but it's disabled: placeholder='%s'", ph)
-                    # Wait a bit more — category selection might still be propagating
                     for _ in range(10):
                         time.sleep(0.5)
                         if inp.is_enabled():
-                            logger.info("Search input became enabled: placeholder='%s'", ph)
                             return inp
                 else:
-                    logger.info("Found enabled search input via scan: placeholder='%s'", ph)
                     return inp
         except Exception:
             continue
 
     page.screenshot(path=str(debug_dir / "search_FAIL_no_input.png"), full_page=False)
-    logger.error("DEBUG screenshot: search_FAIL_no_input.png — no enabled search input found")
+    logger.error("No enabled search input found")
     return None
 
 
 def _pick_best_advertiser(advertisers: list, brand_name: str):
-    """
-    From a list of advertiser elements, pick the one that best matches the
-    brand name. Preference order:
-    1. Exact name match (case-insensitive) with highest follower count
-    2. Name starts with the brand name
-    3. First advertiser entry (closest match by Meta's ranking)
-
-    Returns the best matching element, or None if the list is empty.
-    """
+    """Pick the advertiser entry that best matches the brand name."""
     brand_lower = brand_name.lower().strip()
 
     scored: list[tuple[int, int, object]] = []
@@ -593,33 +1199,26 @@ def _pick_best_advertiser(advertisers: list, brand_name: str):
         adv_name = lines[0].lower().strip()
         follower_count = _parse_follower_count(text)
 
-        # Score: higher is better
         if adv_name == brand_lower:
-            score = 100  # Exact match
+            score = 100
         elif adv_name.startswith(brand_lower):
             score = 80
         elif brand_lower in adv_name:
             score = 60
         else:
-            score = 10  # Meta ranked it, some relevance
+            score = 10
 
         scored.append((score, follower_count, adv))
 
     if not scored:
         return None
 
-    # Sort by score descending, then follower count descending
     scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
-
-    best_score, best_followers, best_el = scored[0]
-    logger.debug(
-        "Best advertiser match: score=%d, followers=%d", best_score, best_followers
-    )
-    return best_el
+    return scored[0][2]
 
 
 def _parse_follower_count(text: str) -> int:
-    """Parse follower count from advertiser entry text like '232.4K follow this'."""
+    """Parse follower count from advertiser entry text."""
     m = re.search(r"([\d,.]+)\s*[Kk]\s*follow", text)
     if m:
         try:
@@ -671,37 +1270,27 @@ def _dismiss_cookie_banner(page) -> None:
             page.wait_for_load_state("networkidle", timeout=5_000)
             logger.debug("Cookie banner dismissed.")
     except Exception:
-        pass  # Cookie banner is optional; never block on it
+        pass
 
 
 def _scroll_to_load_more(page, scroll_pause: float = 1.5) -> None:
-    """Scroll down and wait for lazy-loaded content."""
     page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
     time.sleep(scroll_pause)
     random_delay()
 
 
 def _incremental_scroll(page, rounds: int = 5, pause: float = 2.0) -> None:
-    """Scroll down incrementally to trigger lazy-loaded ad cards.
-
-    Instead of jumping straight to the bottom, scrolls by one viewport height
-    at a time, pausing between each scroll to let content load.
-    """
+    """Scroll down incrementally to trigger lazy-loaded ad cards."""
     for i in range(rounds):
         page.evaluate("window.scrollBy(0, window.innerHeight)")
         time.sleep(pause)
         logger.debug("Incremental scroll %d/%d", i + 1, rounds)
-    # Scroll back to top so extraction starts from the first card
     page.evaluate("window.scrollTo(0, 0)")
     time.sleep(1)
 
 
 def _wait_for_any_card(page, selectors: dict, timeout: int = 15_000):
-    """Wait for at least one ad card to appear by polling for stable text anchors.
-
-    Instead of relying on CSS classes (which Meta rotates), we look for the
-    text "Library ID" which appears exactly once per ad card.
-    """
+    """Wait for at least one ad card to appear by polling for 'Library ID' text."""
     anchor = selectors.get("card_text_anchor", "Library ID")
     deadline = time.time() + (timeout / 1000)
     while time.time() < deadline:
@@ -724,336 +1313,10 @@ def _wait_for_any_card(page, selectors: dict, timeout: int = 15_000):
     return False
 
 
-def _find_card_containers(page, selectors: dict) -> list[dict]:
-    """Find ad card containers using text-anchor DOM walking.
-
-    Strategy:
-    1. Find every text node containing the card_text_anchor (default "Library ID")
-    2. For each, walk UP the DOM until we hit a container that ALSO contains
-       the date anchor ("Started running on") AND at least one <img>
-    3. That container is the real ad card — extract structured data from it
-       right here in JS to avoid stale element handles.
-
-    Returns a list of dicts with raw extracted fields (all text-based).
-    """
-    anchor_id   = selectors.get("card_text_anchor", "Library ID")
-    anchor_date = selectors.get("card_date_anchor", "Started running on")
-
-    cards_data = page.evaluate(
-        """([anchorId, anchorDate]) => {
-            // Collect all text nodes that contain the ID anchor
-            const walker = document.createTreeWalker(
-                document.body, NodeFilter.SHOW_TEXT);
-            const anchors = [];
-            while (walker.nextNode()) {
-                if (walker.currentNode.textContent.includes(anchorId))
-                    anchors.push(walker.currentNode);
-            }
-
-            const seen = new Set();  // dedup by container reference
-            const results = [];
-
-            for (const textNode of anchors) {
-                // Walk up to find the card container
-                let node = textNode.parentElement;
-                let container = null;
-                for (let i = 0; i < 15 && node; i++) {
-                    const text = node.innerText || '';
-                    const hasDate = text.includes(anchorDate);
-                    const hasImg = node.querySelector('img') !== null;
-                    if (hasDate && hasImg) {
-                        container = node;
-                        break;
-                    }
-                    node = node.parentElement;
-                }
-                if (!container || seen.has(container)) continue;
-                seen.add(container);
-
-                // -- Extract structured data from this container --
-                const fullText = container.innerText || '';
-
-                // Library ID: look for numeric ID after the anchor text
-                let adId = null;
-                const idMatch = fullText.match(/Library\\s*ID[:\\s]*([\\d]{10,})/i);
-                if (idMatch) adId = idMatch[1];
-                // Fallback: any 14-18 digit number
-                if (!adId) {
-                    const numMatch = fullText.match(/\\b(\\d{14,18})\\b/);
-                    if (numMatch) adId = numMatch[1];
-                }
-                // Fallback: parse from href ?id=XXXXX
-                if (!adId) {
-                    const links = container.querySelectorAll('a[href*="id="]');
-                    for (const link of links) {
-                        const url = new URL(link.href, location.origin);
-                        const paramId = url.searchParams.get('id');
-                        if (paramId && /^\\d{10,}$/.test(paramId)) {
-                            adId = paramId;
-                            break;
-                        }
-                    }
-                }
-
-                // Start date
-                let startDate = null;
-                const dateMatch = fullText.match(
-                    /Started running on\\s+(.+?)(?:\\n|$)/i);
-                if (dateMatch) startDate = dateMatch[1].trim();
-
-                // Ad copy: the longest text block that isn't metadata
-                // Split by newlines, filter out short/metadata lines, pick longest
-                const lines = fullText.split('\\n').map(l => l.trim()).filter(l => l);
-                const metaKeywords = [
-                    'library id', 'started running', 'see ad details',
-                    'platforms:', 'active', 'inactive', 'follow',
-                ];
-                let adCopy = null;
-                let maxLen = 0;
-                for (const line of lines) {
-                    const lower = line.toLowerCase();
-                    const isMeta = metaKeywords.some(kw => lower.startsWith(kw));
-                    if (!isMeta && line.length > maxLen) {
-                        maxLen = line.length;
-                        adCopy = line;
-                    }
-                }
-
-                // CTA text: look for common CTA patterns
-                let cta = null;
-                const ctaMatch = fullText.match(
-                    /\\b(Shop [Nn]ow|Learn [Mm]ore|Sign [Uu]p|Buy [Nn]ow|Get [Oo]ffer|Book [Nn]ow|Download|Subscribe|Order [Nn]ow|Contact [Uu]s|Apply [Nn]ow|Watch [Mm]ore|Send [Mm]essage|Get [Qq]uote|Install [Nn]ow|Use [Aa]pp|See [Mm]enu)\\b/
-                );
-                if (ctaMatch) cta = ctaMatch[1];
-
-                // Thumbnail: first <img> with substantial src (skip tiny icons)
-                let thumbnailUrl = '';
-                const imgs = container.querySelectorAll('img');
-                for (const img of imgs) {
-                    const src = img.src || '';
-                    if (src.includes('fbcdn') || src.includes('scontent')) {
-                        thumbnailUrl = src;
-                        break;
-                    }
-                }
-                if (!thumbnailUrl && imgs.length > 0) {
-                    thumbnailUrl = imgs[0].src || '';
-                }
-
-                // Creative type inference
-                let creativeType = 'static';
-                if (container.querySelector('video')) {
-                    creativeType = 'video';
-                } else if (imgs.length > 2) {
-                    creativeType = 'carousel';
-                }
-                // Check for reel indicators in text
-                if (fullText.toLowerCase().includes('reel'))
-                    creativeType = 'reel';
-
-                // outerHTML snippet for debug (first card only)
-                const htmlSnippet = results.length === 0
-                    ? container.outerHTML : '';
-
-                results.push({
-                    ad_library_id: adId,
-                    start_date_raw: startDate,
-                    ad_copy: adCopy,
-                    cta_type: cta,
-                    thumbnail_url: thumbnailUrl,
-                    creative_type: creativeType,
-                    html_debug: htmlSnippet,
-                });
-            }
-            return results;
-        }""",
-        [anchor_id, anchor_date],
-    )
-
-    logger.info("Text-anchor card search found %d ad containers", len(cards_data))
-    return cards_data
-
-
-def _get_cards(page, selectors: dict) -> list[dict]:
-    """Find ad cards via text-anchor DOM walking. Returns extracted data dicts."""
-    return _find_card_containers(page, selectors)
-
-
-def _card_id_hint(card_data: dict) -> str:
-    """Return a stable string identifying this card (for dedup)."""
-    return card_data.get("ad_library_id") or str(id(card_data))
-
-
-# ── Ad extraction ──────────────────────────────────────────────────────────────
-
-def _build_ad_from_card_data(
-    card_data: dict, brand_name: str, today_str: str,
-) -> Optional[dict]:
-    """Convert a card data dict (from JS extraction) into a proper ad record."""
-    ad_library_id = card_data.get("ad_library_id")
-    if not ad_library_id:
-        return None
-
-    thumbnail_url = card_data.get("thumbnail_url", "")
-    image_path    = _download_thumbnail(thumbnail_url, brand_name, ad_library_id)
-    start_date    = _parse_date_from_text(card_data.get("start_date_raw") or "")
-    duration_days = _compute_duration(start_date, today_str)
-
-    return {
-        "ad_library_id":  ad_library_id,
-        "brand_name":     brand_name,
-        "ad_copy":        card_data.get("ad_copy"),
-        "cta_type":       card_data.get("cta_type"),
-        "thumbnail_url":  thumbnail_url,
-        "image_path":     image_path,
-        "start_date":     start_date,
-        "last_seen_date": today_str,
-        "duration_days":  duration_days,
-        "is_active":      True,
-        "creative_type":  card_data.get("creative_type", "static"),
-        "scraped_at":     datetime.utcnow().isoformat(),
-    }
-
-
-def _extract_ad(card, selectors: dict, brand_name: str, today_str: str) -> Optional[dict]:
-    """Legacy DOM-element-based extraction (kept for manual fallback)."""
-    ad_library_id = _extract_ad_library_id(card, selectors)
-    if not ad_library_id:
-        return None
-
-    thumbnail_url = _extract_thumbnail_url(card, selectors)
-    image_path    = _download_thumbnail(thumbnail_url, brand_name, ad_library_id)
-    ad_copy       = _extract_text(card, selectors, "ad_copy", "ad_copy_alt")
-    cta_type      = _extract_text(card, selectors, "cta_button", "cta_button_alt")
-    start_date    = _extract_start_date(card, selectors)
-    creative_type = _infer_creative_type(card, selectors)
-    duration_days = _compute_duration(start_date, today_str)
-
-    return {
-        "ad_library_id":  ad_library_id,
-        "brand_name":     brand_name,
-        "ad_copy":        ad_copy,
-        "cta_type":       cta_type,
-        "thumbnail_url":  thumbnail_url,
-        "image_path":     image_path,
-        "start_date":     start_date,
-        "last_seen_date": today_str,
-        "duration_days":  duration_days,
-        "is_active":      True,
-        "creative_type":  creative_type,
-        "scraped_at":     datetime.utcnow().isoformat(),
-    }
-
-
-def _extract_ad_library_id(card, selectors: dict) -> Optional[str]:
-    """
-    Try multiple strategies to extract the Ad Library ID:
-    1. Parse ?id=XXXXX from any <a> href in the card
-    2. Look for a data-ad-id or id attribute
-    3. Parse from inner text containing 'Library ID:'
-    """
-    # Strategy 1: href parse
-    try:
-        link_sel = selectors.get("ad_id_link", "a[href*='id=']")
-        links = card.query_selector_all(link_sel)
-        for link in links:
-            href = link.get_attribute("href") or ""
-            qs = parse_qs(urlparse(href).query)
-            if "id" in qs:
-                return qs["id"][0]
-    except Exception:
-        pass
-
-    # Strategy 2: data attribute on a div
-    try:
-        container = card.query_selector("[data-ad-id]")
-        if container:
-            val = container.get_attribute("data-ad-id")
-            if val:
-                return val
-    except Exception:
-        pass
-
-    # Strategy 3: text containing "Library ID:" or "Ad ID:"
-    try:
-        text = card.inner_text()
-        m = re.search(r"(?:Library ID|Ad ID)[:\s]+(\d{10,})", text)
-        if m:
-            return m.group(1)
-    except Exception:
-        pass
-
-    # Strategy 4: extract any 10+ digit number that looks like an ad ID
-    try:
-        text = card.inner_text()
-        m = re.search(r"\b(\d{14,18})\b", text)
-        if m:
-            return m.group(1)
-    except Exception:
-        pass
-
-    return None
-
-
-def _extract_thumbnail_url(card, selectors: dict) -> str:
-    """Return the src of the first fbcdn image in the card, or ''."""
-    try:
-        img_sel = selectors.get("thumbnail_img", "img[src*='fbcdn']")
-        img = card.query_selector(img_sel)
-        if img:
-            return img.get_attribute("src") or ""
-        # Fallback: any img
-        img = card.query_selector(selectors.get("thumbnail_img_alt", "img"))
-        if img:
-            return img.get_attribute("src") or ""
-    except Exception:
-        pass
-    return ""
-
-
-def _extract_text(card, selectors: dict, primary_key: str, alt_key: str = "") -> Optional[str]:
-    for key in (primary_key, alt_key):
-        if not key:
-            continue
-        sel = selectors.get(key, "")
-        if not sel:
-            continue
-        try:
-            el = card.query_selector(sel)
-            if el:
-                text = el.inner_text().strip()
-                if text:
-                    return text
-        except Exception:
-            continue
-    return None
-
-
-def _extract_start_date(card, selectors: dict) -> Optional[str]:
-    """
-    Extract and normalise start date from text like:
-    'Started running on 15 March, 2024' → '2024-03-15'
-    """
-    raw = _extract_text(card, selectors, "start_date_text", "start_date_text_alt")
-    if not raw:
-        # Try scanning all text in the card
-        try:
-            raw = card.inner_text()
-        except Exception:
-            return None
-
-    return _parse_date_from_text(raw)
-
+# ── Date parsing ──────────────────────────────────────────────────────────────
 
 def _parse_date_from_text(text: str) -> Optional[str]:
-    """
-    Parse a date out of arbitrary text. Handles formats like:
-      - 'Started running on March 15, 2024'
-      - 'Started running on 15 March, 2024'
-      - 'Started running on 15 March 2024'
-      - Standalone 'March 15, 2024' / '15 March 2024'
-    Returns ISO date string 'YYYY-MM-DD' or None.
-    """
+    """Parse a date from text like 'Started running on 15 March, 2024' → '2024-03-15'."""
     MONTHS = {
         "january": 1, "february": 2, "march": 3, "april": 4,
         "may": 5, "june": 6, "july": 7, "august": 8,
@@ -1064,7 +1327,6 @@ def _parse_date_from_text(text: str) -> Optional[str]:
 
     text = text.replace(",", " ").lower()
 
-    # Pattern: DD MonthName YYYY  or  MonthName DD YYYY
     m = re.search(
         r"(\d{1,2})\s+([a-z]+)\s+(\d{4})"
         r"|"
@@ -1072,9 +1334,9 @@ def _parse_date_from_text(text: str) -> Optional[str]:
         text,
     )
     if m:
-        if m.group(1):  # DD MonthName YYYY
+        if m.group(1):
             day, month_str, year = int(m.group(1)), m.group(2), int(m.group(3))
-        else:           # MonthName DD YYYY
+        else:
             month_str, day, year = m.group(4), int(m.group(5)), int(m.group(6))
         month = MONTHS.get(month_str[:3])
         if month:
@@ -1083,33 +1345,11 @@ def _parse_date_from_text(text: str) -> Optional[str]:
             except ValueError:
                 pass
 
-    # Pattern: YYYY-MM-DD already present
     m = re.search(r"(\d{4})-(\d{2})-(\d{2})", text)
     if m:
         return m.group(0)
 
     return None
-
-
-def _infer_creative_type(card, selectors: dict) -> str:
-    """Infer creative type from DOM indicators in priority order."""
-    try:
-        if card.query_selector(selectors.get("reel_indicator", "")):
-            return "reel"
-    except Exception:
-        pass
-    try:
-        if card.query_selector(selectors.get("carousel_container", "")) or \
-           card.query_selector(selectors.get("carousel_container_alt", "")):
-            return "carousel"
-    except Exception:
-        pass
-    try:
-        if card.query_selector(selectors.get("video_element", "video")):
-            return "video"
-    except Exception:
-        pass
-    return "static"
 
 
 def _compute_duration(start_date_iso: Optional[str], today_str: str) -> Optional[int]:
@@ -1122,18 +1362,6 @@ def _compute_duration(start_date_iso: Optional[str], today_str: str) -> Optional
         return max(0, delta)
     except ValueError:
         return None
-
-
-# ── Image download ─────────────────────────────────────────────────────────────
-
-def _download_thumbnail(url: str, brand_name: str, ad_id: str) -> Optional[str]:
-    if not url:
-        return None
-    safe = brand_name.lower().replace(" ", "_")
-    dest = RAW_DIR / safe / f"{ad_id}.jpg"
-    if dest.exists():
-        return str(dest)  # Already downloaded
-    return str(dest) if download_image(url, dest) else None
 
 
 # ── DB persistence ─────────────────────────────────────────────────────────────
@@ -1163,13 +1391,18 @@ def _upsert_ads(brand_id: int, ads: list[dict]) -> int:
                 """INSERT INTO ads (
                        brand_id, ad_library_id, creative_type, ad_copy,
                        cta_type, image_path, thumbnail_url,
-                       start_date, last_seen_date, is_active, scraped_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       start_date, last_seen_date, is_active, scraped_at,
+                       caption, transcript, frames_path, video_url
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(ad_library_id) DO UPDATE SET
                        last_seen_date = excluded.last_seen_date,
                        image_path     = COALESCE(excluded.image_path, image_path),
                        is_active      = excluded.is_active,
-                       scraped_at     = excluded.scraped_at""",
+                       scraped_at     = excluded.scraped_at,
+                       caption        = COALESCE(excluded.caption, caption),
+                       transcript     = COALESCE(excluded.transcript, transcript),
+                       frames_path    = COALESCE(excluded.frames_path, frames_path),
+                       video_url      = COALESCE(excluded.video_url, video_url)""",
                 (
                     brand_id,
                     ad["ad_library_id"],
@@ -1182,6 +1415,10 @@ def _upsert_ads(brand_id: int, ads: list[dict]) -> int:
                     ad.get("last_seen_date"),
                     int(ad.get("is_active", True)),
                     ad.get("scraped_at"),
+                    ad.get("caption"),
+                    ad.get("transcript"),
+                    ad.get("frames_path"),
+                    ad.get("video_url"),
                 ),
             )
             count += 1
@@ -1200,14 +1437,10 @@ def _ensure_competitor_set(client_id: int, competitor_id: int) -> None:
 # ── Misc helpers ───────────────────────────────────────────────────────────────
 
 def _load_selectors_safe() -> dict:
-    """Load selectors, returning empty dict (graceful fallback) on failure."""
     try:
         return load_selectors("meta_ad_library")
     except FileNotFoundError:
-        logger.error(
-            "scraper_config.json not found — create it from the template. "
-            "Scraping will likely fail."
-        )
+        logger.error("scraper_config.json not found — scraping will likely fail.")
         return {}
     except KeyError:
         logger.error("No 'meta_ad_library' section in scraper_config.json.")
@@ -1231,7 +1464,7 @@ def _load_manual_fallback(brand_name: str) -> list[dict]:
 
 
 def _save_raw(brand_name: str, data: dict) -> None:
-    safe = brand_name.lower().replace(" ", "_")
+    safe = safe_brand_slug(brand_name)
     out = RAW_DIR / safe / "meta_ad_library_raw.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -1261,6 +1494,8 @@ def _cli() -> None:
                         help="Brand category (optional)")
     parser.add_argument("--max-pages",   type=int, default=5,
                         help="Max scroll-page loads per brand (default: 5)")
+    parser.add_argument("--max-ads",     type=int, default=0,
+                        help="Max ads to extract per brand (0 = unlimited)")
     args = parser.parse_args()
 
     competitors = [c.strip() for c in args.competitors.split(",") if c.strip()]
@@ -1275,6 +1510,7 @@ def _cli() -> None:
         country=args.country,
         category=args.category,
         max_pages=args.max_pages,
+        max_ads=args.max_ads,
     )
 
     # Persist brand

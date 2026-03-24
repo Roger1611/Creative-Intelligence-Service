@@ -114,6 +114,17 @@ pytest tests/ -v
 - Set `category = 'skincare'` for Just Herbs, Plum, Forest Essentials in DB
 - Live-tested all 3 chains + audit PDF against OpenRouter (Claude Sonnet 4 + Gemini 2.5 Flash)
 
+## Scraper Overhaul (2026-03-24)
+
+- Modal extraction: click "See ad details" button, extract from expanded card, close with Escape
+- Library ID read from card's Nth span before clicking Nth button (positional match)
+- Video/thumbnail extracted from container that appears after modal click
+- faster-whisper transcription with auto language detection (EN/HI/TA)
+- ffmpeg frame extraction at 0s, 0.5s, 1s, 1.5s, 2s, 3s + video midpoint
+- Video file deleted after transcription + frame extraction complete
+- Duplicate detection by video URL: copies existing frames, skips re-download
+- Full transcript stored in DB (no truncation)
+
 ## When Compacting
 
 Always preserve: the full list of pipeline stages, the Build Status table above, the database schema design, any scraper selector changes made during the session, and the current state of which modules are built vs pending.

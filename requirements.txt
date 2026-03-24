@@ -8,3 +8,5 @@ Pillow
 reportlab
 jinja2
 tqdm
+faster-whisper
+

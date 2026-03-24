@@ -30,6 +30,10 @@ CREATE TABLE IF NOT EXISTS ads (
                             ELSE NULL
                         END
                     ) VIRTUAL,
+    caption         TEXT,
+    transcript      TEXT,
+    frames_path     TEXT,
+    video_url       TEXT,
     is_active       INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0,1)),
     scraped_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
