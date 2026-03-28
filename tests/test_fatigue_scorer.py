@@ -3,6 +3,7 @@
 import pytest
 from analysis.fatigue_scorer import (
     _ads_in_range,
+    _build_recommendations,
     _concentration_penalty,
     _count_deficit_penalty,
     _critical_penalty,
@@ -205,3 +206,72 @@ class TestInterpretScore:
     def test_critical(self):
         assert _interpret_score(80) == "critical_fatigue"
         assert _interpret_score(100) == "critical_fatigue"
+
+
+class TestWatchPeriodRecommendation:
+    """Test the 14-21 day watch period recommendation."""
+
+    def _base_kwargs(self):
+        """Common kwargs for _build_recommendations with no other signals."""
+        return {
+            "fatigue_score": 10.0,
+            "critical_ads": [],
+            "warning_ads": [],
+            "format_mix": {
+                "static": {"count": 5, "pct": 50.0},
+                "video": {"count": 5, "pct": 50.0},
+                "carousel": {"count": 0, "pct": 0.0},
+                "reel": {"count": 0, "pct": 0.0},
+            },
+            "total_ads": 10,
+            "days_since_new": 5,
+            "client_count": 10,
+            "competitor_avg": 10.0,
+        }
+
+    def test_watch_ads_present(self, make_ad):
+        """Should add low-priority recommendation when watch_ads are present."""
+        watch = [make_ad(duration_days=16), make_ad(duration_days=19)]
+        kwargs = self._base_kwargs()
+        kwargs["watch_ads"] = watch
+
+        recs = _build_recommendations(**kwargs)
+        watch_recs = [r for r in recs if "watch period" in r["signal"]]
+
+        assert len(watch_recs) == 1
+        assert watch_recs[0]["priority"] == "low"
+        assert "2 ad(s)" in watch_recs[0]["signal"]
+        assert "CTR drops 20%" in watch_recs[0]["action"]
+
+    def test_no_watch_ads(self):
+        """Should not add watch period recommendation when no watch_ads."""
+        kwargs = self._base_kwargs()
+        kwargs["watch_ads"] = []
+
+        recs = _build_recommendations(**kwargs)
+        watch_recs = [r for r in recs if "watch period" in r.get("signal", "")]
+
+        assert len(watch_recs) == 0
+
+    def test_watch_ads_none(self):
+        """Should handle watch_ads=None gracefully (backwards compat)."""
+        kwargs = self._base_kwargs()
+        kwargs["watch_ads"] = None
+
+        recs = _build_recommendations(**kwargs)
+        watch_recs = [r for r in recs if "watch period" in r.get("signal", "")]
+
+        assert len(watch_recs) == 0
+
+    def test_watch_range_boundary(self, make_ad):
+        """Verify _ads_in_range correctly captures 14-21 day ads."""
+        ads = [
+            make_ad(duration_days=13),  # below watch
+            make_ad(duration_days=14),  # in watch
+            make_ad(duration_days=18),  # in watch
+            make_ad(duration_days=20),  # in watch
+            make_ad(duration_days=21),  # at upper boundary (exclusive)
+            make_ad(duration_days=25),  # above watch
+        ]
+        result = _ads_in_range(ads, min_days=14, max_days=21)
+        assert len(result) == 3  # 14, 18, 20

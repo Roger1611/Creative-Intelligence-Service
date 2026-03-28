@@ -53,6 +53,15 @@ CREATE TABLE IF NOT EXISTS ad_analysis (
     color_palette_json    TEXT,
     is_profitable         INTEGER CHECK(is_profitable IN (0,1)),
     analysis_json         TEXT,
+    hook_structure        TEXT CHECK(hook_structure IN (
+                              'question','number_lead','pattern_interrupt',
+                              'direct_address','curiosity_gap','transformation',
+                              'social_proof_lead','urgency_lead','authority_lead',
+                              'bold_claim'
+                          )),
+    semantic_cluster      TEXT,
+    thumb_stop_score      INTEGER CHECK(thumb_stop_score BETWEEN 1 AND 10),
+    trust_stack_json      TEXT,
     analyzed_at           TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -74,6 +83,16 @@ CREATE TABLE IF NOT EXISTS creative_concepts (
     cta_variations_json      TEXT,
     psychological_angle      TEXT,
     source_competitor_ad_id  INTEGER REFERENCES ads(id) ON DELETE SET NULL,
+    hook_structure           TEXT CHECK(hook_structure IN (
+                                 'question','number_lead','pattern_interrupt',
+                                 'direct_address','curiosity_gap','transformation',
+                                 'social_proof_lead','urgency_lead','authority_lead',
+                                 'bold_claim'
+                             )),
+    entity_id_tag            TEXT,
+    trust_stack_json         TEXT,
+    format_spec              TEXT,
+    thumb_stop_score         INTEGER CHECK(thumb_stop_score BETWEEN 1 AND 10),
     generated_at             TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

@@ -37,6 +37,8 @@ from config import (
 
 logger = logging.getLogger(__name__)
 
+_WATCH_MIN_DAYS    = 14   # ads entering the watch period (14–21 days)
+_WATCH_MAX_DAYS    = 21   # upper bound for approaching-watch-period signal
 _WARNING_MIN_DAYS  = 14   # ads in 14–29 days range = warning zone
 _CRITICAL_MIN_DAYS = FATIGUE_AD_MIN_DAYS   # 30 days
 _CRITICAL_PTS_PER_AD   = 10
@@ -120,6 +122,9 @@ def run(brand_name: str, competitor_names: list[str]) -> dict:
         "recency_penalty":              recency_penalty,
     }
 
+    # ── Watch period: ads 14-21 days (approaching Andromeda decay) ──────────
+    watch_ads = _ads_in_range(client_ads, _WATCH_MIN_DAYS, _WATCH_MAX_DAYS)
+
     recommendations = _build_recommendations(
         fatigue_score=fatigue_score,
         critical_ads=critical_ads,
@@ -129,6 +134,7 @@ def run(brand_name: str, competitor_names: list[str]) -> dict:
         days_since_new=days_since_new,
         client_count=len(client_ads),
         competitor_avg=competitor_avg_count,
+        watch_ads=watch_ads,
     )
 
     result = {
@@ -143,6 +149,7 @@ def run(brand_name: str, competitor_names: list[str]) -> dict:
         "format_mix":               format_mix,
         "critical_ads": [_ad_summary(a) for a in critical_ads],
         "warning_ads":  [_ad_summary(a) for a in warning_ads],
+        "watch_ads":    [_ad_summary(a) for a in watch_ads],
         "recommendations":          recommendations,
     }
 
@@ -295,6 +302,7 @@ def _build_recommendations(
     days_since_new:   Optional[int],
     client_count:     int,
     competitor_avg:   float,
+    watch_ads:        list[dict] | None = None,
 ) -> list[dict]:
     """
     Returns a list of recommendation dicts:
@@ -337,6 +345,19 @@ def _build_recommendations(
             "priority": "high" if days_since_new > 30 else "medium",
             "signal": f"Last new creative launched {days_since_new} days ago.",
             "action": f"Launch a fresh creative immediately — the {_RECENCY_THRESHOLD}-day refresh window has passed.",
+        })
+
+    if watch_ads:
+        recs.append({
+            "priority": "low",
+            "signal": (
+                f"{len(watch_ads)} ad(s) entering the 14-21 day watch period. "
+                "Even top performers can experience Andromeda decay at 2-4 weeks."
+            ),
+            "action": (
+                "Monitor CTR daily — if CTR drops 20%+ from 7-day peak, "
+                "rotate immediately."
+            ),
         })
 
     if fatigue_score >= 60 and not recs:

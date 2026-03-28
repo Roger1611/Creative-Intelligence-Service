@@ -1,0 +1,353 @@
+# REPOINFO
+
+Repository analyzed: `Creative-Intelligence-Service`
+Analysis date: `2026-03-27`
+
+## 1. System Overview
+
+This repository is a Python-based creative intelligence pipeline for Indian D2C brands. It scrapes live competitor advertising signals, structures them into a SQLite database, analyzes creative performance proxies, uses LLM chains to deconstruct competitor ads and generate new concepts, and produces client-facing PDF deliverables.
+
+### End-to-end purpose
+
+The system is designed to do three business jobs:
+
+1. Generate free lead-generation audits for prospects.
+2. Generate full paid creative sprints with many ad concepts.
+3. Build a longer-term learning loop from real ad performance data.
+
+### Core execution modes
+
+- `audit`: competitor scrape + analysis + LLM diagnosis + 3-page PDF audit.
+- `sprint`: everything in `audit` plus full concept generation and sprint PDF/JSON deliverables.
+- `batch-audit`: runs `audit` for each row in a CSV.
+- `refresh`: re-scrapes an existing client/competitor set, reruns analysis, and logs diffs.
+
+### What the active implementation actually does
+
+1. Initializes local directories and SQLite schema.
+2. Scrapes Meta Ad Library for the client brand and competitor brands.
+3. Optionally scrapes Instagram profiles and brand websites.
+4. Persists ad data into SQLite.
+5. Computes deduplication, format mix, diversity, profitability proxy, fatigue score, and category-level intelligence.
+6. Runs LLM analysis on competitor ads.
+7. Runs LLM waste diagnosis for the client brand.
+8. Runs LLM concept generation for new ad ideas.
+9. Builds PDFs and JSON sidecars from database state.
+10. Optionally imports Meta Ads Manager CSV exports and analyzes real performance patterns.
+
+### Important implementation notes
+
+- The current LLM path uses `OpenRouter` through the `openai` SDK, keyed by `OPENROUTER_API_KEY` in `config.py`.
+- `scrapers/brand_website.py` is called by the pipeline, but its output is not currently persisted or consumed downstream.
+- `feedback/loop.py` generates winning-pattern summaries and next-batch weights, but `llm/chains.py` does not currently inject that output into `chain_concept_generation()`.
+- The README describes some older provider assumptions; the source code is the authoritative behavior.
+
+### Primary inputs and outputs
+
+Inputs:
+
+- Brand name, competitor names, category, output directory, and mode via CLI.
+- Meta Ad Library pages, Instagram public pages, brand websites.
+- `.env` config and `scraper_config.json`.
+- Optional Meta Ads Manager CSV performance exports.
+
+Outputs:
+
+- SQLite DB: `d2c_intel.db`
+- Raw scrape/media files: `data/raw/...`
+- Processed JSON artifacts: `data/processed/...`
+- Performance imports: `data/performance/...`
+- Audit PDFs: `audits/...`
+- Sprint PDFs and JSON sidecars: output directory chosen at runtime
+
+## 2. Module Breakdown
+
+### Root-level folders and files
+
+| Path | Purpose |
+| --- | --- |
+| `.claude/` | Local assistant/project guidance metadata. |
+| `.pytest_cache/` | Pytest cache artifacts. |
+| `analysis/` | Post-ingestion analytics: deduplication, winner proxy, fatigue, category intelligence. |
+| `audits/` | Generated sample audit PDFs already present in the repo. |
+| `cisenv/` | Local virtual environment directory. |
+| `data/` | Runtime data area for raw media, processed JSON, and imported performance files. |
+| `db/` | SQLite schema definition. |
+| `debug_output/` | Screenshots and HTML dumps from scraper debugging. |
+| `deliverables/` | PDF and JSON deliverable generation. |
+| `feedback/` | Performance import and post-campaign learning loop. |
+| `llm/` | LLM client, prompt chains, and prompt templates. |
+| `scrapers/` | Meta, Instagram, and website scraping logic plus shared scraper helpers. |
+| `tests/` | Unit tests for analytics and prompt/template behavior. |
+| `__pycache__/` | Python bytecode cache. |
+| `.env` | Local secrets and runtime configuration. |
+| `.gitignore` | Ignore rules. |
+| `brands_to_audit.csv` | Sample batch-audit input file. |
+| `CLAUDE.md` | Project-specific implementation notes and working conventions. |
+| `config.py` | Environment loading, constants, model routing config, DB init helpers. |
+| `d2c_intel.db` | Local SQLite database snapshot. |
+| `debug_autocomplete.py` | Manual Playwright debugger for Meta search/autocomplete behavior. |
+| `debug_meta_scraper.py` | Manual Meta scraper debugging utility. |
+| `Makefile` | Convenience commands for setup/test tasks. |
+| `pipeline.py` | Main CLI orchestrator for audit, sprint, batch, and refresh flows. |
+| `README.md` | High-level product and usage documentation. |
+| `requirements.txt` | Declared Python dependencies. |
+| `scraper_config.json` | Central selector configuration for Meta and Instagram scrapers. |
+| `REPOINFO` | This repository analysis document. |
+
+### `analysis/`
+
+| Path | Purpose |
+| --- | --- |
+| `analysis/__init__.py` | Package marker. |
+| `analysis/structurer.py` | Ingests raw ads into SQLite and runs deduplication, format distribution, copy stats, and diversity scoring; writes processed JSON. |
+| `analysis/profitability_filter.py` | Flags ads as probable winners using the 21-day rule and writes ranked winner summaries. |
+| `analysis/fatigue_scorer.py` | Scores client creative fatigue using duration, concentration, count deficit, and recency signals; writes `waste_reports`. |
+| `analysis/category_intel.py` | Aggregates category/competitor-set intelligence across triggers, formats, durations, CTAs, patterns, and whitespace opportunities. |
+
+### `scrapers/`
+
+| Path | Purpose |
+| --- | --- |
+| `scrapers/__init__.py` | Package marker. |
+| `scrapers/meta_ad_library.py` | Main Playwright scraper for Meta Ad Library; handles search, infinite scroll, modal extraction, thumbnail/video download, transcription, frame extraction, raw JSON save, and DB upserts. |
+| `scrapers/instagram_profile.py` | Supplementary Playwright scraper for public Instagram profile metrics and recent-post engagement; persists to `instagram_profiles`. |
+| `scrapers/brand_website.py` | Extracts hero copy, USP claims, product names, testimonials, and meta description from brand websites. |
+| `scrapers/utils.py` | Shared scraper helpers for delays, user-agent rotation, selector loading, image download, and safe slugs. |
+
+### `llm/`
+
+| Path | Purpose |
+| --- | --- |
+| `llm/__init__.py` | Package marker. |
+| `llm/client.py` | OpenRouter-backed JSON-only LLM client with multimodal support, retries, fallback model routing, and cost logging. |
+| `llm/chains.py` | Orchestrates competitor analysis, waste diagnosis, and concept generation; persists results to DB and processed JSON. |
+| `llm/prompts/competitor_deconstruction.txt` | System prompt schema for per-ad competitor analysis. |
+| `llm/prompts/waste_diagnosis.txt` | Prompt for diagnosing creative waste and priority actions. |
+| `llm/prompts/concept_generation.txt` | Prompt for generating concept batches with diversity constraints. |
+
+### `deliverables/`
+
+| Path | Purpose |
+| --- | --- |
+| `deliverables/__init__.py` | Package marker. |
+| `deliverables/audit_generator.py` | Builds the free audit PDF from client ads, waste report, competitors, and sample concepts. |
+| `deliverables/sprint_generator.py` | Builds the paid sprint PDF and JSON sidecar from concepts, competitor intel, waste report, and client ads. |
+
+### `feedback/`
+
+| Path | Purpose |
+| --- | --- |
+| `feedback/__init__.py` | Package marker. |
+| `feedback/performance_parser.py` | Imports Meta Ads Manager CSV data and links rows to ads and generated concepts. |
+| `feedback/loop.py` | Derives angle, hook, and format performance patterns plus next-batch weights from imported performance data. |
+
+### `db/`
+
+| Path | Purpose |
+| --- | --- |
+| `db/schema.sql` | Defines the SQLite schema and indexes. Tables: `brands`, `ads`, `ad_analysis`, `competitor_sets`, `creative_concepts`, `waste_reports`, `performance_data`, `instagram_profiles`. |
+
+### `tests/`
+
+| Path | Purpose |
+| --- | --- |
+| `tests/__init__.py` | Package marker. |
+| `tests/conftest.py` | Shared fixtures, in-memory DB setup, and sample ad builders. |
+| `tests/test_structurer.py` | Tests deduplication, format distribution, and diversity scoring. |
+| `tests/test_profitability_filter.py` | Tests profitability proxy logic and cross-competitor aggregation. |
+| `tests/test_fatigue_scorer.py` | Tests fatigue scoring components and interpretation labels. |
+| `tests/test_chains.py` | Tests prompt file existence and prompt template formatting without making API calls. |
+
+### Runtime/output directories
+
+| Path | Purpose |
+| --- | --- |
+| `data/raw/` | Per-brand raw scrape JSON, thumbnails, and extracted video frames. |
+| `data/processed/` | Structured JSON outputs from analysis and LLM chains. |
+| `data/performance/` | Intended location for imported client performance files. |
+| `debug_output/` | Temporary screenshots and DOM dumps used to troubleshoot scraper behavior. |
+| `audits/` | Generated audit PDFs. |
+
+## 3. Data Flow
+
+### Main pipeline flow
+
+1. `pipeline.py` parses CLI arguments and calls `config.init_db()`.
+2. `scrapers/meta_ad_library.run()` scrapes the client brand and competitors, saving raw results under `data/raw/{brand}/meta_ad_library_raw.json`.
+3. For each brand, `analysis.structurer.ingest()` upserts `brands` and `ads`.
+4. `pipeline.py` creates `competitor_sets` links between the client brand and competitors.
+5. `analysis.structurer.run()` reads ads back from SQLite, deduplicates them, computes diversity metrics, and writes `data/processed/{brand}.json`.
+6. `analysis.profitability_filter.run()` flags probable winners and updates `ad_analysis.is_profitable`.
+7. `analysis.fatigue_scorer.run()` analyzes the client brand’s fatigue signals and writes a `waste_reports` row plus `data/processed/{brand}_fatigue.json`.
+8. `analysis.category_intel.run()` joins `ads` and `ad_analysis` to derive patterns/opportunities across the competitive universe.
+9. `llm.chains.chain_competitor_analysis()` loads competitor ads and media, calls the multimodal model, and writes structured competitor analysis into `ad_analysis.analysis_json`.
+10. `llm.chains.chain_waste_diagnosis()` reads client ads plus competitor benchmarks and writes another `waste_reports` row with LLM-generated actions.
+11. `llm.chains.chain_concept_generation()` reads competitor intel, waste diagnosis, and current brand ads, then writes new concepts to `creative_concepts`.
+12. `deliverables.audit_generator.run()` or `deliverables.sprint_generator.run()` reads from SQLite and renders PDFs.
+
+### Scraper data contracts
+
+`meta_ad_library.py` produces ad dicts with fields including:
+
+- `ad_library_id`
+- `creative_type`
+- `caption` / `ad_copy`
+- `cta_type`
+- `thumbnail_url`
+- `image_path`
+- `start_date`
+- `last_seen_date`
+- `duration_days`
+- `video_url`
+- `transcript`
+- `transcript_language`
+- `frames_path`
+- `scraped_at`
+
+These fields are the backbone for downstream analytics and multimodal LLM calls.
+
+### Media/data persistence path
+
+- Thumbnail/video/frame assets go to `data/raw/{brand_slug}/{ad_library_id}/...`
+- Structured DB state lives in `d2c_intel.db`
+- Processed snapshots live in `data/processed/*.json`
+- PDFs are rendered from DB state, not from raw scrape files
+
+### Instagram and website side paths
+
+- Instagram data is scraped and persisted to `instagram_profiles`.
+- Website data is scraped and returned as a dict, but is currently not persisted or consumed by later stages.
+
+### Feedback loop path
+
+1. `feedback.performance_parser.run()` imports CSV rows into `performance_data`, linking them to `ads` and `creative_concepts` when possible.
+2. `feedback.loop.run()` joins `performance_data` with concept/ad metadata and outputs:
+   - angle performance
+   - hook structure performance
+   - format performance
+   - natural-language winning patterns
+   - next-batch angle weights
+3. That output is saved to processed JSON, but is not yet wired back into `chain_concept_generation()`.
+
+## 4. Key Functions & Responsibilities
+
+| Function | Responsibility |
+| --- | --- |
+| `pipeline.main()` | CLI entry point; dispatches all modes and initializes the DB. |
+| `pipeline._run_audit()` | Full audit orchestration from scrape through PDF generation. |
+| `pipeline._run_sprint()` | Full sprint orchestration including concept generation and sprint deliverable. |
+| `pipeline._run_batch_audit()` | Reads CSV rows and runs audit mode repeatedly. |
+| `pipeline._run_refresh()` | Re-scrapes existing brands, reruns analysis/LLM stages, and logs diffs. |
+| `config.init_db()` | Creates data directories, applies schema, and runs DB migrations. |
+| `config.get_connection()` | Returns SQLite connections with row factories and FK enforcement. |
+| `scrapers.meta_ad_library.run()` | Entry point for scraping client and competitor ads. |
+| `scrapers.meta_ad_library._playwright_scrape()` | Handles browser setup, navigation, search selection, scrolling, and modal extraction loop. |
+| `scrapers.meta_ad_library._extract_ad_via_modal()` | Builds the final ad record, downloads assets, transcribes video, and extracts frames. |
+| `scrapers.meta_ad_library._transcribe_video()` | Uses `faster-whisper` to generate transcript text and language code. |
+| `scrapers.meta_ad_library._extract_frames()` | Uses `ffmpeg`/`ffprobe` to create representative video frames for LLM vision input. |
+| `scrapers.instagram_profile.run()` | Supplementary Instagram scrape with persistence to `instagram_profiles`. |
+| `scrapers.brand_website.run()` | Extracts top-level positioning signals from the brand site. |
+| `analysis.structurer.ingest()` | Upserts brand and ad rows into SQLite immediately after scraping. |
+| `analysis.structurer.run()` | Deduplicates ads, computes diversity/copy stats, and writes processed JSON. |
+| `analysis.structurer._deduplicate()` | Removes duplicate ads by ID, copy fingerprint, thumbnail URL, and video URL. |
+| `analysis.structurer._diversity_score()` | Computes the 0-100 four-part diversity score used in downstream interpretation. |
+| `analysis.profitability_filter.run()` | Applies the 21-day profitability proxy and writes ranked winners. |
+| `analysis.fatigue_scorer.run()` | Produces client creative fatigue score, recommendations, and `waste_reports` entries. |
+| `analysis.category_intel.run()` | Produces trigger, format, CTA, duration, and pattern intelligence across the competitor set. |
+| `llm.client.analyze_ad()` | Multimodal JSON analysis entry point for competitor creatives. |
+| `llm.client.generate_text()` | Text-only JSON generation entry point for waste diagnosis and concept generation. |
+| `llm.client._call()` | Applies retry and fallback model behavior. |
+| `llm.chains.chain_competitor_analysis()` | Runs per-competitor-ad analysis and persists structured results into `ad_analysis`. |
+| `llm.chains.chain_waste_diagnosis()` | Builds a client-vs-competitor prompt and writes waste recommendations into `waste_reports`. |
+| `llm.chains.chain_concept_generation()` | Generates concept batches and writes them into `creative_concepts`. |
+| `deliverables.audit_generator.run()` | Builds the free audit PDF. |
+| `deliverables.sprint_generator.run()` | Builds the paid sprint PDF and JSON sidecar. |
+| `feedback.performance_parser.run()` | Imports Meta performance CSVs into `performance_data`. |
+| `feedback.performance_parser._resolve_ad_id()` | Links imported rows to known scraped ads. |
+| `feedback.performance_parser._resolve_concept_id()` | Fuzzy-matches imported rows to generated concepts. |
+| `feedback.loop.run()` | Produces winning-pattern summaries and next-batch weights from actual performance data. |
+| `feedback.loop._analyse_angles()` | Computes ROAS/CTR/CPA summaries per psychological angle. |
+| `feedback.loop._analyse_hooks()` | Classifies hook structures and finds top CTR patterns. |
+| `feedback.loop._compute_next_batch_weights()` | Converts angle performance into concept allocation weights. |
+
+## 5. External Dependencies
+
+### External APIs and services
+
+| Dependency | How it is used |
+| --- | --- |
+| `OpenRouter API` | LLM inference backend for multimodal competitor analysis and text generation. |
+| `Facebook Meta Ad Library` | Primary competitor ad source scraped with Playwright. |
+| `Instagram public web pages` | Supplementary social proof and engagement source. |
+| Brand websites | Used for hero copy, USP, and positioning extraction. |
+
+### Active model routing in code
+
+Defined in `config.py` via `MODEL_MAP`:
+
+- `competitor_deconstruction` -> `anthropic/claude-sonnet-4`
+- `waste_diagnosis` -> `google/gemini-2.5-flash`
+- `concept_generation` -> `anthropic/claude-sonnet-4`
+- `fallback` -> `google/gemini-2.5-flash`
+
+Authentication expected by the current implementation:
+
+- `OPENROUTER_API_KEY`
+
+### Python libraries actively used
+
+| Library | Usage |
+| --- | --- |
+| `playwright` | Meta and Instagram scraping; JS-rendered website fallback. |
+| `httpx` | HTTP fetching and image downloads. |
+| `beautifulsoup4` | HTML parsing for brand websites. |
+| `openai` | OpenAI-compatible SDK used against OpenRouter. |
+| `python-dotenv` | Loads `.env` settings. |
+| `reportlab` | Audit and sprint PDF generation. |
+| `tqdm` | CLI progress bars in pipeline runs. |
+| `faster-whisper` | Video transcription for spoken hook/context extraction. |
+
+### Runtime tools expected on the machine
+
+| Tool | Usage |
+| --- | --- |
+| `Chromium` via `playwright install chromium` | Browser runtime for scraping. |
+| `ffmpeg` | Frame extraction from downloaded ad videos. |
+| `ffprobe` | Video duration detection for midpoint frame extraction. |
+
+### Declared dependencies not clearly used in current source path
+
+These appear in `requirements.txt` but are not part of the current main import path:
+
+- `anthropic`
+- `jinja2`
+- `Pillow`
+
+They may be legacy, planned, or indirectly useful, but the active implementation does not rely on them directly.
+
+### Local configuration and non-code dependencies
+
+| File | Role |
+| --- | --- |
+| `.env` | Secrets and runtime settings, including model overrides and scraper tuning. |
+| `scraper_config.json` | All CSS/XPath selectors for Meta and Instagram scraping. |
+| `db/schema.sql` | Database shape and indexes. |
+| `brands_to_audit.csv` | Batch-run input source. |
+
+## Summary
+
+This repository is best understood as a local-first intelligence pipeline with four layers:
+
+1. Acquisition: scrape ads/social/site data.
+2. Structuring and scoring: normalize into SQLite and derive heuristic analytics.
+3. LLM reasoning: convert ad/media/context into competitor intelligence, waste diagnosis, and new concepts.
+4. Delivery and learning: generate PDFs and optionally analyze real campaign results.
+
+The strongest implemented path today is:
+
+`Meta scrape -> SQLite -> analysis -> LLM chains -> PDF deliverables`
+
+The partially implemented path is:
+
+`website scrape + performance feedback -> future concept generation improvements`

@@ -64,6 +64,9 @@ def run(brand_name: str, competitor_names: list[str]) -> dict:
     # ── Trigger analysis ────────────────────────────────────────────────────
     trigger_analysis   = _trigger_analysis(all_analyses, profitable_ads, all_ads)
 
+    # ── Hook structure analysis ───────────────────────────────────────────
+    hook_structure_analysis = _hook_structure_analysis(all_analyses, profitable_ads)
+
     # ── Format analysis ─────────────────────────────────────────────────────
     format_analysis    = _format_analysis(all_ads, profitable_ads)
 
@@ -77,7 +80,7 @@ def run(brand_name: str, competitor_names: list[str]) -> dict:
     per_brand = _per_brand_summary(brand_rows, all_ads, profitable_ads, name_to_id)
 
     # ── Patterns and opportunities ────────────────────────────────────────────
-    patterns      = _derive_patterns(trigger_analysis, format_analysis, duration_analysis, cta_analysis)
+    patterns      = _derive_patterns(trigger_analysis, format_analysis, duration_analysis, cta_analysis, hook_structure_analysis)
     opportunities = _derive_opportunities(trigger_analysis, format_analysis)
 
     intel = {
@@ -88,6 +91,7 @@ def run(brand_name: str, competitor_names: list[str]) -> dict:
         "profitable_ads_in_universe": len(profitable_ads),
         "profitable_rate":         round(len(profitable_ads) / len(all_ads) * 100, 1) if all_ads else 0,
         "trigger_analysis":        trigger_analysis,
+        "hook_structure_analysis":  hook_structure_analysis,
         "format_analysis":         format_analysis,
         "duration_analysis":       duration_analysis,
         "cta_analysis":            cta_analysis,
@@ -153,6 +157,61 @@ def _trigger_analysis(
         "total_ads_with_trigger":  len(all_triggers),
         "trigger_coverage_pct":    round(len(all_triggers) / len(all_analyses) * 100, 1)
                                    if all_analyses else 0,
+    }
+
+
+HOOK_STRUCTURES: list[str] = [
+    "question", "number_lead", "pattern_interrupt", "direct_address",
+    "curiosity_gap", "transformation", "social_proof_lead", "urgency_lead",
+    "authority_lead", "bold_claim",
+]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Hook structure analysis
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _hook_structure_analysis(
+    all_analyses:   list[dict],
+    profitable_ads: list[dict],
+) -> dict:
+    """
+    For each hook_structure value:
+      - Count across ALL analysed ads (prevalence)
+      - Count in profitable ads only
+      - Compute profitable_rate (% of ads with this hook that are profitable)
+      - Flag underused hooks (structures with 0 profitable ads)
+    """
+    profitable_ad_ids = {a["id"] for a in profitable_ads}
+
+    all_hooks = [
+        r["hook_structure"] for r in all_analyses
+        if r.get("hook_structure")
+    ]
+    profitable_hooks = [
+        r["hook_structure"]
+        for r in all_analyses
+        if r.get("hook_structure") and r.get("ad_id") in profitable_ad_ids
+    ]
+
+    all_hook_counts        = Counter(all_hooks)
+    profitable_hook_counts = Counter(profitable_hooks)
+
+    profitable_rate: dict[str, float] = {}
+    for hook, total_count in all_hook_counts.items():
+        p_count = profitable_hook_counts.get(hook, 0)
+        profitable_rate[hook] = round(p_count / total_count * 100, 1)
+
+    used_in_profitable = set(profitable_hook_counts.keys())
+    underused = [h for h in HOOK_STRUCTURES if h not in used_in_profitable]
+
+    return {
+        "by_prevalence":           dict(all_hook_counts.most_common()),
+        "by_profitable_only":      dict(profitable_hook_counts.most_common()),
+        "profitable_rate_by_hook": dict(
+            sorted(profitable_rate.items(), key=lambda x: x[1], reverse=True)
+        ),
+        "underused_hooks":         underused,
     }
 
 
@@ -270,6 +329,7 @@ def _derive_patterns(
     format_analysis:   dict,
     duration_analysis: dict,
     cta_analysis:      dict,
+    hook_structure_analysis: dict | None = None,
 ) -> list[str]:
     """
     Synthesise data into plain-English statements for LLM context and client reports.
@@ -333,6 +393,16 @@ def _derive_patterns(
             patterns.append(
                 f"'{top_cta}' is the dominant CTA among winners ({top_pct}% of profitable ads)."
             )
+
+    # ── Hook structure dominance ─────────────────────────────────────────────
+    if hook_structure_analysis:
+        hook_p_rate = hook_structure_analysis.get("profitable_rate_by_hook", {})
+        for hook, rate in hook_p_rate.items():
+            if rate >= 50:
+                patterns.append(
+                    f"'{hook}' hook structure has a {rate:.0f}% win rate — "
+                    "ads opening with this structure are disproportionately profitable."
+                )
 
     return patterns
 

@@ -13,6 +13,12 @@ Required JSON output:
   "copy_tone": "<one of: conversational, authoritative, urgent, empathetic, aspirational, educational>",
   "reading_level": "<one of: simple, moderate, advanced>",
   "hook_analysis": "<what the first line or visual element does to stop the scroll>",
+  "hook_structure": "<one of: question, number_lead, pattern_interrupt, direct_address, curiosity_gap, transformation, social_proof_lead, urgency_lead, authority_lead, bold_claim>",
+  "semantic_cluster": "<3-5 word descriptor of this ad's conceptual territory, e.g. 'founder-story-ingredient-trust' or 'before-after-skin-transformation'. Must be specific enough that two ads with the same cluster would be treated as the same creative by an algorithm>",
+  "thumb_stop_score": <integer 1-10>,
+  "trust_stack": [<array of detected Indian trust signals from this list: "cod_mention", "upi_discount", "social_proof_number", "certification_badge", "whatsapp_cta", "price_anchor", "emi_mention", "free_delivery". Empty array if none detected>],
+  "cqs_risk_flags": [<array of quality risks detected: "sensationalized_claim", "engagement_bait", "withholding_product_info", "excessive_text_overlay", "unverifiable_superlative". Empty array if clean>],
+  "audio_visual_coherence": "<one of: coherent, incoherent, na>",
   "spoken_hook": "<for video ads with transcript: the opening spoken line (first ~5 seconds). null if no transcript>",
   "language_mix": "<one of: hindi_dominant, english_dominant, code_switch, na. 'na' if no transcript>",
   "transcript_cta": "<the spoken call-to-action phrase from the transcript. null if no transcript>",
@@ -28,6 +34,27 @@ Rules:
 - copy_tone MUST be exactly one of the 6 values listed.
 - reading_level MUST be exactly one of: simple, moderate, advanced.
 - cta_type MUST be exactly one of the 6 values listed.
+- hook_structure MUST be exactly one of the 10 values listed. Classify the opening hook:
+    question: opens with a question ("Tired of dry skin?")
+    number_lead: opens with a number or stat ("10 lakh+ customers")
+    pattern_interrupt: unusual visual or statement that breaks scroll pattern
+    direct_address: speaks directly to the viewer ("You deserve better skin")
+    curiosity_gap: withholds info to create curiosity ("This one ingredient changed everything")
+    transformation: leads with before/after or change narrative
+    social_proof_lead: leads with testimonial, review count, or celebrity endorsement
+    urgency_lead: leads with time pressure or scarcity ("Last 24 hours")
+    authority_lead: leads with expert/dermat/certification credibility
+    bold_claim: leads with a strong product claim ("Removes dark spots in 7 days")
+- semantic_cluster should be specific enough that two ads with the same cluster would be treated as the same creative by an algorithm. Use lowercase words joined by hyphens, 3-5 words.
+- thumb_stop_score: rate 1-10 using these criteria:
+    +2 human face/relatable emotion in first frame
+    +2 bold problem statement text overlay (≤7 words, high contrast)
+    +2 pattern interrupt or unusual visual
+    +2 silent-friendly (works without sound)
+    +1 question or curiosity gap
+    (score 1-4 = weak, 5-7 = average, 8-10 = strong)
+- trust_stack: scan ad copy, visual, and transcript for Indian market trust signals. Include only signals explicitly present. Empty array if none found.
+- cqs_risk_flags: flag any quality risks present. Empty array if the ad is clean.
 - color_palette must contain 2-5 hex color codes extracted from the visual.
 - effectiveness_score must be an integer from 1 to 10.
 - If the ad has no image, base visual_layout and color_palette on the copy and any available metadata.
@@ -35,5 +62,6 @@ Rules:
   - spoken_hook: extract the opening spoken line (roughly first 5 seconds of speech).
   - language_mix: classify as hindi_dominant, english_dominant, or code_switch based on the transcript language blend. Hindi-English code-switching is very common in Indian D2C video ads.
   - transcript_cta: identify the spoken call-to-action phrase (e.g. "order now", "link in bio", "try it today").
-- If no transcript is present (static ad), set spoken_hook, transcript_cta to null and language_mix to "na".
+  - audio_visual_coherence: if transcript present, classify whether the hook_structure matches the spoken_hook. "coherent" if the visual hook and spoken hook reinforce the same message, "incoherent" if they diverge or contradict.
+- If no transcript is present (static ad), set spoken_hook, transcript_cta to null, language_mix to "na", and audio_visual_coherence to "na".
 - Return ONLY the JSON object. No markdown fences, no explanation outside the JSON.

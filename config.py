@@ -94,6 +94,9 @@ VALID_CATEGORIES: list[str] = [
 
 VALID_CREATIVE_TYPES: list[str] = ["static", "carousel", "video", "reel"]
 
+# Set FORCE_REANALYZE=1 to skip the analysis cache and re-analyze all ads.
+FORCE_REANALYZE: bool = os.getenv("FORCE_REANALYZE", "0") == "1"
+
 
 # ── Database helpers ───────────────────────────────────────────────────────────
 
@@ -137,6 +140,46 @@ def _migrate_ads_table() -> None:
             if col not in existing:
                 conn.execute(f"ALTER TABLE ads ADD COLUMN {col} {typ}")
                 logger.info("Migrated ads table: added column '%s'", col)
+
+    _migrate_ad_analysis_table()
+    _migrate_creative_concepts_table()
+
+
+def _migrate_ad_analysis_table() -> None:
+    """Add hook_structure/semantic_cluster/thumb_stop_score/trust_stack_json if missing."""
+    new_columns = {
+        "hook_structure": "TEXT",
+        "semantic_cluster": "TEXT",
+        "thumb_stop_score": "INTEGER",
+        "trust_stack_json": "TEXT",
+    }
+    with get_connection() as conn:
+        existing = {
+            row[1] for row in conn.execute("PRAGMA table_info(ad_analysis)").fetchall()
+        }
+        for col, typ in new_columns.items():
+            if col not in existing:
+                conn.execute(f"ALTER TABLE ad_analysis ADD COLUMN {col} {typ}")
+                logger.info("Migrated ad_analysis table: added column '%s'", col)
+
+
+def _migrate_creative_concepts_table() -> None:
+    """Add hook_structure/entity_id_tag/trust_stack_json/format_spec/thumb_stop_score if missing."""
+    new_columns = {
+        "hook_structure": "TEXT",
+        "entity_id_tag": "TEXT",
+        "trust_stack_json": "TEXT",
+        "format_spec": "TEXT",
+        "thumb_stop_score": "INTEGER",
+    }
+    with get_connection() as conn:
+        existing = {
+            row[1] for row in conn.execute("PRAGMA table_info(creative_concepts)").fetchall()
+        }
+        for col, typ in new_columns.items():
+            if col not in existing:
+                conn.execute(f"ALTER TABLE creative_concepts ADD COLUMN {col} {typ}")
+                logger.info("Migrated creative_concepts table: added column '%s'", col)
 
 
 if __name__ == "__main__":

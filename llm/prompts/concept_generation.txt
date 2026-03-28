@@ -22,9 +22,44 @@ Return a JSON array of exactly $num_concepts concept objects. Each concept must 
   "psychological_angle": "<one of: status, fear, social_proof, transformation, agitation_solution, curiosity, urgency, authority, belonging, aspiration>",
   "format_recommendation": "<one of: static, carousel, video>",
   "format_reasoning": "<1 sentence on why this format suits this concept>",
+  "format_spec": "<format-specific production instructions — see FORMAT SPEC RULES below>",
+  "hook_structure": "<one of: question, number_lead, pattern_interrupt, direct_address, curiosity_gap, transformation, social_proof_lead, urgency_lead, authority_lead, bold_claim>",
+  "entity_id_tag": "<hook_structure + '_' + 3-word visual setting, e.g. 'transformation_skincare_before_after', 'social_proof_ugc_testimonial_face'>",
+  "trust_stack": ["<at least 2 Indian trust signals from: cod_mention, upi_discount, social_proof_number, certification_badge, whatsapp_cta, price_anchor, emi_mention, free_delivery>"],
+  "thumb_stop_score": <integer 1-10>,
   "competitor_reference": "<inspired by [competitor name] ad running X days — adapted for $brand_name by [how it differs]>",
   "differentiation_note": "<how this concept differs from the brand's existing creatives>"
 }
+
+FORMAT SPEC RULES:
+- If format_recommendation is "static": "4:5 vertical, single bold text overlay ≤7 words top-third, product prominent, high contrast background"
+- If format_recommendation is "video": "9:16 vertical, sound-on hook in first 3s, captions mandatory, bottom 35% clear of text, face in frame if possible"
+- If format_recommendation is "carousel": "card_1: video or bold visual hook, cards 2-5: product benefit sequence, final card: price+CTA, 1:1 square each card"
+- You may customise the spec further but MUST include the base requirements above for each format.
+
+ENTITY ID DIVERSITY (mandatory — stricter than before):
+- Every concept must have a unique entity_id_tag. No two concepts can share the same entity_id_tag.
+- No two concepts can share the same hook_structure AND the same visual setting.
+- At least 8 semantically distinct entity_id_tags across the full batch.
+- Before assigning an entity_id_tag, check the competitor semantic_clusters provided in competitor_intel — do not duplicate territory already owned by a dominant competitor (one running 30+ days).
+
+CQS COMPLIANCE (every concept must pass):
+- No sensationalized claims without evidence ("100% guaranteed", "miracle", "instant").
+- No engagement bait CTAs ("comment if you agree", "tag a friend who needs this").
+- No withholding — product name and category must be clear from the hook alone.
+- Text overlay: state the problem or claim, not the brand name, in ≤7 words.
+- If making a claim (dermat-tested, X% effective), it must be attributable.
+
+HOOK QUALITY TARGETS:
+- Target thumb_stop_score ≥ 7 for all concepts. Do not submit concepts scoring below 5.
+- thumb_stop_score criteria:
+    +2 human face/relatable emotion in first frame
+    +2 bold problem statement text overlay (≤7 words, high contrast)
+    +2 pattern interrupt or unusual visual
+    +2 silent-friendly (works without sound)
+    +1 question or curiosity gap
+- Every hook must be silent-friendly: the visual + text overlay alone must communicate the core message without audio.
+- At least 5 concepts must feature a human face expressing relatable emotion in the visual_direction.
 
 DIVERSITY REQUIREMENTS (mandatory — the output will be rejected if these are not met):
 - At least 5 concepts per psychological trigger (all 10 triggers must be represented).
@@ -32,11 +67,27 @@ DIVERSITY REQUIREMENTS (mandatory — the output will be rejected if these are n
 - No two hooks may use the same opening structure (e.g., if one starts with a question, the next must not; if one starts with a bold claim, vary the next).
 - Spread CTA types across: shop_now, learn_more, sign_up, limited_offer, social_proof_cta, try_free.
 
+FORMAT MIX (mandatory counts for a $num_concepts-concept batch):
+- ≥ 10 video concepts (9:16, sound-on hook specified)
+- ≥ 8 carousel concepts (card sequence specified)
+- ≥ 12 feed static concepts (4:5, text overlay specified)
+- Remainder flexible
+
+TRUST STACK (Indian market specifics — MANDATORY):
+- Every concept must include at least 2 trust signals from: cod_mention, upi_discount, social_proof_number, certification_badge, whatsapp_cta, price_anchor, emi_mention, free_delivery.
+- At least 15 concepts must include cod_mention or price_anchor.
+- At least 8 concepts must include social_proof_number ("X+ customers", "Y+ reviews").
+- At least 5 concepts must include certification_badge ("dermat-tested", "FSSAI certified", "toxin-free").
+- At least 3 concepts must include whatsapp_cta.
+
 Rules:
 - psychological_angle MUST be exactly one of the 10 values listed.
 - format_recommendation MUST be exactly one of: static, carousel, video.
+- hook_structure MUST be exactly one of the 10 values listed.
 - Every hook must be specific to "$brand_name" products — no generic hooks like "Transform your skin" without naming the brand or product.
 - body_script must be 3-5 sentences, max 150 words.
 - cta_variations must contain exactly 3 options.
 - competitor_reference must cite a real competitor from the intel provided.
+- trust_stack must contain at least 2 signals per concept.
+- entity_id_tag must be unique across all concepts in this batch.
 - Return ONLY the JSON array. No markdown fences, no explanation outside the JSON.
