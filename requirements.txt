@@ -9,4 +9,5 @@ reportlab
 jinja2
 tqdm
 faster-whisper
+apify-client==2.5.0
 

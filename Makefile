@@ -8,6 +8,8 @@ CATEGORY ?= skincare
 NUM_CONCEPTS ?= 50
 FILE ?= brands_to_audit.csv
 OUTPUT ?= audits
+BRAND_PAGE_ID ?=
+COMPETITOR_PAGE_IDS ?=
 
 setup:
 	pip install -r requirements.txt
@@ -18,16 +20,37 @@ test:
 	$(PYTEST) tests/ -v
 
 audit:
-	$(PYTHON) pipeline.py audit --brand "$(BRAND)" --competitors "$(COMPETITORS)" --category $(CATEGORY) --output $(OUTPUT)
+	$(PYTHON) pipeline.py audit \
+		--brand "$(BRAND)" \
+		--competitors "$(COMPETITORS)" \
+		--category $(CATEGORY) \
+		--output $(OUTPUT) \
+		$(if $(BRAND_PAGE_ID),--brand-page-id $(BRAND_PAGE_ID),) \
+		$(if $(COMPETITOR_PAGE_IDS),--competitor-page-ids "$(COMPETITOR_PAGE_IDS)",)
 
 sprint:
-	$(PYTHON) pipeline.py sprint --brand "$(BRAND)" --competitors "$(COMPETITORS)" --category $(CATEGORY) --num-concepts $(NUM_CONCEPTS) --output sprints
+	$(PYTHON) pipeline.py sprint \
+		--brand "$(BRAND)" \
+		--competitors "$(COMPETITORS)" \
+		--category $(CATEGORY) \
+		--num-concepts $(NUM_CONCEPTS) \
+		--output sprints \
+		$(if $(BRAND_PAGE_ID),--brand-page-id $(BRAND_PAGE_ID),) \
+		$(if $(COMPETITOR_PAGE_IDS),--competitor-page-ids "$(COMPETITOR_PAGE_IDS)",)
 
 batch:
-	$(PYTHON) pipeline.py batch-audit --brands-file "$(FILE)" --category $(CATEGORY) --output $(OUTPUT)
+	$(PYTHON) pipeline.py batch-audit \
+		--brands-file "$(FILE)" \
+		--category $(CATEGORY) \
+		--output $(OUTPUT) \
+		$(if $(BRAND_PAGE_ID),--brand-page-id $(BRAND_PAGE_ID),) \
+		$(if $(COMPETITOR_PAGE_IDS),--competitor-page-ids "$(COMPETITOR_PAGE_IDS)",)
 
 refresh:
-	$(PYTHON) pipeline.py refresh --brand "$(BRAND)"
+	$(PYTHON) pipeline.py refresh \
+		--brand "$(BRAND)" \
+		$(if $(BRAND_PAGE_ID),--brand-page-id $(BRAND_PAGE_ID),) \
+		$(if $(COMPETITOR_PAGE_IDS),--competitor-page-ids "$(COMPETITOR_PAGE_IDS)",)
 
 lint:
 	ruff check .

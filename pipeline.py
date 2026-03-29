@@ -97,6 +97,7 @@ def main() -> None:
                          help="Comma-separated competitor brand names")
     p_audit.add_argument("--category",    choices=config.VALID_CATEGORIES)
     p_audit.add_argument("--output",      default="audits")
+    _add_page_id_args(p_audit)
 
     # sprint
     p_sprint = sub.add_parser("sprint",
@@ -106,20 +107,24 @@ def main() -> None:
     p_sprint.add_argument("--category",     choices=config.VALID_CATEGORIES)
     p_sprint.add_argument("--num-concepts", type=int, default=50)
     p_sprint.add_argument("--output",       default="sprints")
+    _add_page_id_args(p_sprint)
 
     # batch-audit
     p_batch = sub.add_parser("batch-audit",
                              help="Run audit for brands listed in a CSV")
     p_batch.add_argument("--brands-file", required=True,
-                         help="CSV with columns: brand_name, competitors, category")
+                         help="CSV with columns: brand_name, competitors, category "
+                              "(optional: page_id, competitor_page_ids)")
     p_batch.add_argument("--category",    choices=config.VALID_CATEGORIES,
                          help="Default category if CSV row is blank")
     p_batch.add_argument("--output",      default="audits")
+    _add_page_id_args(p_batch)
 
     # refresh
     p_refresh = sub.add_parser("refresh",
                                help="Re-scrape and update an existing brand")
     p_refresh.add_argument("--brand", required=True)
+    _add_page_id_args(p_refresh)
 
     args = parser.parse_args()
 
@@ -127,6 +132,11 @@ def main() -> None:
     config.init_db()
 
     tracker = RunTracker()
+
+    competitor_page_ids = _parse_competitor_page_ids(
+        getattr(args, "competitor_page_ids", None)
+    )
+    brand_page_id = getattr(args, "brand_page_id", None)
 
     if args.mode == "audit":
         _run_audit(
@@ -136,6 +146,8 @@ def main() -> None:
             output=args.output,
             dry_run=args.dry_run,
             tracker=tracker,
+            brand_page_id=brand_page_id,
+            competitor_page_ids=competitor_page_ids,
         )
 
     elif args.mode == "sprint":
@@ -147,6 +159,8 @@ def main() -> None:
             output=args.output,
             dry_run=args.dry_run,
             tracker=tracker,
+            brand_page_id=brand_page_id,
+            competitor_page_ids=competitor_page_ids,
         )
 
     elif args.mode == "batch-audit":
@@ -156,6 +170,8 @@ def main() -> None:
             output=args.output,
             dry_run=args.dry_run,
             tracker=tracker,
+            brand_page_id=brand_page_id,
+            competitor_page_ids=competitor_page_ids,
         )
 
     elif args.mode == "refresh":
@@ -163,6 +179,8 @@ def main() -> None:
             brand_name=args.brand,
             dry_run=args.dry_run,
             tracker=tracker,
+            brand_page_id=brand_page_id,
+            competitor_page_ids=competitor_page_ids,
         )
 
     print(tracker.summary())
@@ -171,7 +189,7 @@ def main() -> None:
 # ── Pipeline steps (with progress tracking) ──────────────────────────────────
 
 AUDIT_STEPS = [
-    "Scrape Meta Ad Library",
+    "Scrape via Apify (brand + competitors)",
     "Scrape Instagram profiles",
     "Scrape brand websites",
     "Ingest & structure data",
@@ -199,6 +217,8 @@ def _run_audit(
     output: str,
     dry_run: bool,
     tracker: RunTracker,
+    brand_page_id: str | None = None,
+    competitor_page_ids: dict[str, str] | None = None,
 ) -> Path | None:
     """Run the full audit pipeline. Returns the PDF path on success."""
     logger.info("=" * 50)
@@ -210,18 +230,28 @@ def _run_audit(
         tracker.ok(brand_name)
         return None
 
+    competitor_page_ids = competitor_page_ids or {}
+
     progress = tqdm(AUDIT_STEPS, desc=brand_name, unit="step", leave=True)
     try:
         # Lazy imports so startup stays fast
-        from scrapers import meta_ad_library, instagram_profile, brand_website
+        from scrapers import apify_scraper, instagram_profile, brand_website
         from analysis import structurer, profitability_filter, fatigue_scorer
         from analysis import category_intel
         from llm import chains
         from deliverables import audit_generator
 
-        # 1. Scrape Meta Ad Library
-        progress.set_postfix_str("scraping Meta")
-        raw = meta_ad_library.run(brand_name, competitors, category=category)
+        # 1. Scrape via Apify API
+        progress.set_postfix_str("Scrape via Apify API")
+        competitor_list = [{"name": c, "page_id": competitor_page_ids.get(c)}
+                           for c in competitors]
+        raw = apify_scraper.run(
+            brand_name=brand_name,
+            page_id=brand_page_id,
+            competitors=competitor_list,
+            country="IN",
+            max_ads=config.MAX_ADS_DEFAULT,
+        )
         progress.update(1)
 
         # 2. Scrape Instagram (non-blocking — failures don't crash pipeline)
@@ -306,6 +336,8 @@ def _run_sprint(
     output: str,
     dry_run: bool,
     tracker: RunTracker,
+    brand_page_id: str | None = None,
+    competitor_page_ids: dict[str, str] | None = None,
 ) -> Path | None:
     """Run audit pipeline + full concept generation + sprint deliverable."""
     logger.info("=" * 50)
@@ -319,16 +351,26 @@ def _run_sprint(
         tracker.ok(brand_name)
         return None
 
+    competitor_page_ids = competitor_page_ids or {}
+
     progress = tqdm(all_steps, desc=brand_name, unit="step", leave=True)
     try:
-        from scrapers import meta_ad_library, instagram_profile, brand_website
+        from scrapers import apify_scraper, instagram_profile, brand_website
         from analysis import structurer, profitability_filter, fatigue_scorer
         from analysis import category_intel
         from llm import chains
         from deliverables import audit_generator, sprint_generator
 
         # Steps 1–9: same as audit
-        raw = meta_ad_library.run(brand_name, competitors, category=category)
+        competitor_list = [{"name": c, "page_id": competitor_page_ids.get(c)}
+                           for c in competitors]
+        raw = apify_scraper.run(
+            brand_name=brand_name,
+            page_id=brand_page_id,
+            competitors=competitor_list,
+            country="IN",
+            max_ads=config.MAX_ADS_DEFAULT,
+        )
         progress.update(1)
 
         _scrape_instagram_safe(instagram_profile, brand_name, competitors)
@@ -403,6 +445,8 @@ def _run_batch_audit(
     output: str,
     dry_run: bool,
     tracker: RunTracker,
+    brand_page_id: str | None = None,
+    competitor_page_ids: dict[str, str] | None = None,
 ) -> None:
     """Run audit mode for every brand in a CSV file."""
     path = Path(brands_file)
@@ -426,10 +470,19 @@ def _run_batch_audit(
 
     logger.info("Batch audit: %d brands → %s", len(rows), batch_dir)
 
+    cli_competitor_page_ids = competitor_page_ids or {}
+
     for i, row in enumerate(rows, 1):
         brand = (row.get("brand_name") or row.get("brand", "")).strip()
         competitors = _split(row.get("competitors", ""))
         category = (row.get("category") or "").strip() or default_category
+
+        # Per-row page IDs from CSV (override CLI args if present)
+        row_brand_page_id = (row.get("page_id") or "").strip() or brand_page_id
+        row_comp_page_ids = dict(cli_competitor_page_ids)
+        csv_comp_ids = (row.get("competitor_page_ids") or "").strip()
+        if csv_comp_ids:
+            row_comp_page_ids.update(_parse_competitor_page_ids(csv_comp_ids))
 
         if not brand:
             logger.warning("Row %d: empty brand name, skipping", i)
@@ -444,6 +497,8 @@ def _run_batch_audit(
             output=str(batch_dir),
             dry_run=dry_run,
             tracker=tracker,
+            brand_page_id=row_brand_page_id,
+            competitor_page_ids=row_comp_page_ids,
         )
 
 
@@ -453,6 +508,8 @@ def _run_refresh(
     brand_name: str,
     dry_run: bool,
     tracker: RunTracker,
+    brand_page_id: str | None = None,
+    competitor_page_ids: dict[str, str] | None = None,
 ) -> None:
     """Re-scrape, diff against previous data, generate new concepts."""
     logger.info("=" * 50)
@@ -494,8 +551,10 @@ def _run_refresh(
     finally:
         conn.close()
 
+    competitor_page_ids = competitor_page_ids or {}
+
     steps = [
-        "Re-scrape Meta Ad Library",
+        "Scrape via Apify API",
         "Re-scrape Instagram",
         "Re-ingest & structure",
         "Re-run analysis pipeline",
@@ -512,14 +571,22 @@ def _run_refresh(
 
     progress = tqdm(steps, desc=f"refresh:{brand_name}", unit="step", leave=True)
     try:
-        from scrapers import meta_ad_library, instagram_profile
+        from scrapers import apify_scraper, instagram_profile
         from analysis import structurer, profitability_filter, fatigue_scorer
         from analysis import category_intel
         from llm import chains
 
-        # 1. Re-scrape
-        progress.set_postfix_str("scraping")
-        raw = meta_ad_library.run(brand_name, competitors, category=category)
+        # 1. Re-scrape via Apify
+        progress.set_postfix_str("Scrape via Apify API")
+        competitor_list = [{"name": c, "page_id": competitor_page_ids.get(c)}
+                           for c in competitors]
+        raw = apify_scraper.run(
+            brand_name=brand_name,
+            page_id=brand_page_id,
+            competitors=competitor_list,
+            country="IN",
+            max_ads=config.MAX_ADS_DEFAULT,
+        )
         progress.update(1)
 
         # 2. Instagram
@@ -710,6 +777,35 @@ def _fetch_competitor_names(client_brand_id: int) -> list[str]:
 
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
+
+def _add_page_id_args(subparser: argparse.ArgumentParser) -> None:
+    """Add --brand-page-id and --competitor-page-ids to a subparser."""
+    subparser.add_argument(
+        "--brand-page-id", default=None,
+        help="Facebook Page ID of the client brand (optional)",
+    )
+    subparser.add_argument(
+        "--competitor-page-ids", default=None,
+        help='Page IDs as "Name:PageID,Name:PageID" (optional)',
+    )
+
+
+def _parse_competitor_page_ids(raw: str | None) -> dict[str, str]:
+    """Parse ``"Plum:789,Forest Essentials:101"`` into a dict."""
+    if not raw:
+        return {}
+    result: dict[str, str] = {}
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry or ":" not in entry:
+            continue
+        name, pid = entry.split(":", 1)
+        name = name.strip()
+        pid = pid.strip()
+        if name and pid:
+            result[name] = pid
+    return result
+
 
 def _split(s: str) -> list[str]:
     """Split comma-separated string, stripping whitespace."""

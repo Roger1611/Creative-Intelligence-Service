@@ -19,3 +19,5 @@ data/*.db
 .env.example
 
 data/
+debug_output/
+

@@ -31,6 +31,13 @@ OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
 if not OPENROUTER_API_KEY:
     logger.warning("OPENROUTER_API_KEY is not set — LLM calls will fail.")
 
+APIFY_API_KEY: str = os.getenv("APIFY_API_KEY", "")
+APIFY_ACTOR_ID: str = os.getenv("APIFY_ACTOR_ID", "apify/meta-ads-library-scraper")
+APIFY_TIMEOUT_SECS: int = int(os.getenv("APIFY_TIMEOUT_SECS", "300"))
+
+if not APIFY_API_KEY:
+    logger.warning("APIFY_API_KEY is not set — Apify scraping will fail.")
+
 # ── LLM settings ──────────────────────────────────────────────────────────────
 
 # Task → OpenRouter model mapping.  Override individual entries via env vars

@@ -34,7 +34,9 @@ config.py         → Central config, loads .env, initializes DB on first run
 | db/schema.sql | ✅ Done | 8 tables incl. instagram_profiles; VIRTUAL duration_days column |
 | config.py | ✅ Done | init_db(), get_connection(), all constants |
 | scraper_config.json | ✅ Done | All CSS selectors for Meta + Instagram; update here when DOM changes |
-| scrapers/meta_ad_library.py | ✅ Done | Playwright, 4-strategy ID extraction, retry+backoff, pagination, CLI |
+| scrapers/meta_ad_library.py | ⚠️ Deprecated | Replaced by apify_scraper.py; keeps manual fallback + DB helpers |
+| scrapers/apify_scraper.py | ✅ Done | Apify actor, field mapping, video/thumbnail processing, CLI |
+| scrapers/video_downloader.py | ✅ Done | httpx + Playwright fallback download, faster-whisper, ffmpeg frames |
 | scrapers/instagram_profile.py | ✅ Done | JSON-first extraction, DOM fallback, engagement rate, CLI |
 | scrapers/brand_website.py | ✅ Done | httpx + BS4, Playwright fallback for JS-rendered pages |
 | scrapers/utils.py | ✅ Done | random_delay, load_selectors, download_image, safe_brand_slug |
@@ -146,7 +148,7 @@ Always preserve: the full list of pipeline stages, the Build Status table above,
 
 ## Security
 
-- All keys in `.env`, never hardcode or log — if `.env` is committed, rotate all keys immediately
+- All keys in `.env`, never hardcode or log (`OPENROUTER_API_KEY`, `APIFY_API_KEY`, `APIFY_ACTOR_ID`) — if `.env` is committed, rotate all keys immediately
 - `data/` must be in `.gitignore` — never commit client CSVs or performance exports
 - Sanitize brand/competitor names before using in file paths — use `safe_brand_slug()` from scrapers/utils.py
 - Parameterized queries only — never f-string into SQL
