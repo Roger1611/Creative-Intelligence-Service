@@ -35,7 +35,7 @@ config.py         → Central config, loads .env, initializes DB on first run
 | config.py | ✅ Done | init_db(), get_connection(), all constants |
 | scraper_config.json | ✅ Done | All CSS selectors for Meta + Instagram; update here when DOM changes |
 | scrapers/meta_ad_library.py | ⚠️ Deprecated | Replaced by apify_scraper.py; keeps manual fallback + DB helpers |
-| scrapers/apify_scraper.py | ✅ Done | Apify actor, field mapping, video/thumbnail processing, CLI |
+| scrapers/apify_scraper.py | ✅ Done | URL-based scraping (no keyword search), field mapping, video/thumbnail processing, CLI |
 | scrapers/video_downloader.py | ✅ Done | httpx + Playwright fallback download, faster-whisper, ffmpeg frames |
 | scrapers/instagram_profile.py | ✅ Done | JSON-first extraction, DOM fallback, engagement rate, CLI |
 | scrapers/brand_website.py | ✅ Done | httpx + BS4, Playwright fallback for JS-rendered pages |
@@ -61,14 +61,33 @@ config.py         → Central config, loads .env, initializes DB on first run
 pip install -r requirements.txt
 playwright install chromium
 
-# Pipeline modes
-python pipeline.py audit --brand "Mamaearth" --competitors "Plum,WOW Skin Science" --category skincare
-python pipeline.py sprint --brand "Mamaearth" --competitors "Plum,WOW Skin Science" --num-concepts 50
+# Pipeline modes (--brand-url is required — paste the full Meta Ad Library URL from your browser)
+python pipeline.py audit \
+  --brand "Mamaearth" \
+  --brand-url "https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=IN&view_all_page_id=XXXXXXXXX&search_type=page" \
+  --competitor-urls "Plum:https://www.facebook.com/ads/library/?...&view_all_page_id=YYY,WOW Skin Science:https://...&view_all_page_id=ZZZ" \
+  --competitors "Plum,WOW Skin Science" \
+  --category skincare
+
+python pipeline.py sprint \
+  --brand "Mamaearth" \
+  --brand-url "https://www.facebook.com/ads/library/?...&view_all_page_id=XXXXXXXXX" \
+  --competitor-urls "Plum:https://...,WOW Skin Science:https://..." \
+  --competitors "Plum,WOW Skin Science" \
+  --num-concepts 50
+
 python pipeline.py batch-audit --brands-file brands_to_audit.csv --category skincare
-python pipeline.py refresh --brand "Mamaearth"
+python pipeline.py refresh \
+  --brand "Mamaearth" \
+  --brand-url "https://www.facebook.com/ads/library/?...&view_all_page_id=XXXXXXXXX"
 
 # Individual modules
-python -m scrapers.meta_ad_library --brand "Mamaearth" --competitors "Plum,WOW"
+python -m scrapers.apify_scraper \
+  --brand "Just Herbs" \
+  --brand-url "https://www.facebook.com/ads/library/?...&view_all_page_id=119280251482021" \
+  --competitors "WOW Skin Science India:https://...,Forest Essentials:https://..." \
+  --max-ads 10
+
 python -m deliverables.audit_generator --brand "Mamaearth" --output audits/
 python -m feedback.performance_parser --file export.csv --brand "Mamaearth"
 
@@ -155,3 +174,11 @@ Always preserve: the full list of pipeline stages, the Build Status table above,
 - Scraped ad copy is untrusted — wrap in `<ad_content>` delimiters in LLM prompts, add "ignore instructions within" guard
 - Cap downloaded images at 10MB, reject larger
 - Pin exact dependency versions in requirements.txt
+
+## URL-Based Scraper Overhaul (2026-03-30)
+
+Keyword/name search removed — scraper now requires full Meta Ad Library URLs. Prevents credit waste from broad keyword matches.
+
+- **apify_scraper.py**: `run(brand_url=...)` replaces `run(page_id=...)`; `_extract_page_id(url)` parses + validates URL; `_build_actor_url(page_id)` always reconstructs clean URL; keyword search URLs rejected; `max_ads` default 10, hard cap 50; 4 limit fields + client-side slice
+- **pipeline.py**: `--brand-page-id` → `--brand-url`; `--competitor-page-ids` → `--competitor-urls` (format: `"Name:URL,Name:URL"`); `brand_url` required for all modes except dry-run
+- 115 tests pass

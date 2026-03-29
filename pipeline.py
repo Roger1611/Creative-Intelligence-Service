@@ -97,7 +97,7 @@ def main() -> None:
                          help="Comma-separated competitor brand names")
     p_audit.add_argument("--category",    choices=config.VALID_CATEGORIES)
     p_audit.add_argument("--output",      default="audits")
-    _add_page_id_args(p_audit)
+    _add_url_args(p_audit)
 
     # sprint
     p_sprint = sub.add_parser("sprint",
@@ -107,24 +107,24 @@ def main() -> None:
     p_sprint.add_argument("--category",     choices=config.VALID_CATEGORIES)
     p_sprint.add_argument("--num-concepts", type=int, default=50)
     p_sprint.add_argument("--output",       default="sprints")
-    _add_page_id_args(p_sprint)
+    _add_url_args(p_sprint)
 
     # batch-audit
     p_batch = sub.add_parser("batch-audit",
                              help="Run audit for brands listed in a CSV")
     p_batch.add_argument("--brands-file", required=True,
                          help="CSV with columns: brand_name, competitors, category "
-                              "(optional: page_id, competitor_page_ids)")
+                              "(optional: brand_url, competitor_urls)")
     p_batch.add_argument("--category",    choices=config.VALID_CATEGORIES,
                          help="Default category if CSV row is blank")
     p_batch.add_argument("--output",      default="audits")
-    _add_page_id_args(p_batch)
+    _add_url_args(p_batch)
 
     # refresh
     p_refresh = sub.add_parser("refresh",
                                help="Re-scrape and update an existing brand")
     p_refresh.add_argument("--brand", required=True)
-    _add_page_id_args(p_refresh)
+    _add_url_args(p_refresh)
 
     args = parser.parse_args()
 
@@ -133,10 +133,10 @@ def main() -> None:
 
     tracker = RunTracker()
 
-    competitor_page_ids = _parse_competitor_page_ids(
-        getattr(args, "competitor_page_ids", None)
+    competitor_urls = _parse_competitor_urls(
+        getattr(args, "competitor_urls", None)
     )
-    brand_page_id = getattr(args, "brand_page_id", None)
+    brand_url = getattr(args, "brand_url", None)
 
     if args.mode == "audit":
         _run_audit(
@@ -146,8 +146,8 @@ def main() -> None:
             output=args.output,
             dry_run=args.dry_run,
             tracker=tracker,
-            brand_page_id=brand_page_id,
-            competitor_page_ids=competitor_page_ids,
+            brand_url=brand_url,
+            competitor_urls=competitor_urls,
         )
 
     elif args.mode == "sprint":
@@ -159,8 +159,8 @@ def main() -> None:
             output=args.output,
             dry_run=args.dry_run,
             tracker=tracker,
-            brand_page_id=brand_page_id,
-            competitor_page_ids=competitor_page_ids,
+            brand_url=brand_url,
+            competitor_urls=competitor_urls,
         )
 
     elif args.mode == "batch-audit":
@@ -170,8 +170,8 @@ def main() -> None:
             output=args.output,
             dry_run=args.dry_run,
             tracker=tracker,
-            brand_page_id=brand_page_id,
-            competitor_page_ids=competitor_page_ids,
+            brand_url=brand_url,
+            competitor_urls=competitor_urls,
         )
 
     elif args.mode == "refresh":
@@ -179,8 +179,8 @@ def main() -> None:
             brand_name=args.brand,
             dry_run=args.dry_run,
             tracker=tracker,
-            brand_page_id=brand_page_id,
-            competitor_page_ids=competitor_page_ids,
+            brand_url=brand_url,
+            competitor_urls=competitor_urls,
         )
 
     print(tracker.summary())
@@ -217,8 +217,8 @@ def _run_audit(
     output: str,
     dry_run: bool,
     tracker: RunTracker,
-    brand_page_id: str | None = None,
-    competitor_page_ids: dict[str, str] | None = None,
+    brand_url: str | None = None,
+    competitor_urls: list[dict] | None = None,
 ) -> Path | None:
     """Run the full audit pipeline. Returns the PDF path on success."""
     logger.info("=" * 50)
@@ -230,7 +230,13 @@ def _run_audit(
         tracker.ok(brand_name)
         return None
 
-    competitor_page_ids = competitor_page_ids or {}
+    if not brand_url:
+        raise ValueError(
+            "brand_url is required. Pass --brand-url with the full "
+            "Meta Ad Library URL for the client brand."
+        )
+
+    competitor_urls = competitor_urls or []
 
     progress = tqdm(AUDIT_STEPS, desc=brand_name, unit="step", leave=True)
     try:
@@ -243,14 +249,10 @@ def _run_audit(
 
         # 1. Scrape via Apify API
         progress.set_postfix_str("Scrape via Apify API")
-        competitor_list = [{"name": c, "page_id": competitor_page_ids.get(c)}
-                           for c in competitors]
         raw = apify_scraper.run(
             brand_name=brand_name,
-            page_id=brand_page_id,
-            competitors=competitor_list,
-            country="IN",
-            max_ads=config.MAX_ADS_DEFAULT,
+            brand_url=brand_url,
+            competitors=competitor_urls,
         )
         progress.update(1)
 
@@ -336,8 +338,8 @@ def _run_sprint(
     output: str,
     dry_run: bool,
     tracker: RunTracker,
-    brand_page_id: str | None = None,
-    competitor_page_ids: dict[str, str] | None = None,
+    brand_url: str | None = None,
+    competitor_urls: list[dict] | None = None,
 ) -> Path | None:
     """Run audit pipeline + full concept generation + sprint deliverable."""
     logger.info("=" * 50)
@@ -351,7 +353,13 @@ def _run_sprint(
         tracker.ok(brand_name)
         return None
 
-    competitor_page_ids = competitor_page_ids or {}
+    if not brand_url:
+        raise ValueError(
+            "brand_url is required. Pass --brand-url with the full "
+            "Meta Ad Library URL for the client brand."
+        )
+
+    competitor_urls = competitor_urls or []
 
     progress = tqdm(all_steps, desc=brand_name, unit="step", leave=True)
     try:
@@ -362,14 +370,10 @@ def _run_sprint(
         from deliverables import audit_generator, sprint_generator
 
         # Steps 1–9: same as audit
-        competitor_list = [{"name": c, "page_id": competitor_page_ids.get(c)}
-                           for c in competitors]
         raw = apify_scraper.run(
             brand_name=brand_name,
-            page_id=brand_page_id,
-            competitors=competitor_list,
-            country="IN",
-            max_ads=config.MAX_ADS_DEFAULT,
+            brand_url=brand_url,
+            competitors=competitor_urls,
         )
         progress.update(1)
 
@@ -445,8 +449,8 @@ def _run_batch_audit(
     output: str,
     dry_run: bool,
     tracker: RunTracker,
-    brand_page_id: str | None = None,
-    competitor_page_ids: dict[str, str] | None = None,
+    brand_url: str | None = None,
+    competitor_urls: list[dict] | None = None,
 ) -> None:
     """Run audit mode for every brand in a CSV file."""
     path = Path(brands_file)
@@ -470,19 +474,19 @@ def _run_batch_audit(
 
     logger.info("Batch audit: %d brands → %s", len(rows), batch_dir)
 
-    cli_competitor_page_ids = competitor_page_ids or {}
+    cli_competitor_urls = competitor_urls or []
 
     for i, row in enumerate(rows, 1):
         brand = (row.get("brand_name") or row.get("brand", "")).strip()
         competitors = _split(row.get("competitors", ""))
         category = (row.get("category") or "").strip() or default_category
 
-        # Per-row page IDs from CSV (override CLI args if present)
-        row_brand_page_id = (row.get("page_id") or "").strip() or brand_page_id
-        row_comp_page_ids = dict(cli_competitor_page_ids)
-        csv_comp_ids = (row.get("competitor_page_ids") or "").strip()
-        if csv_comp_ids:
-            row_comp_page_ids.update(_parse_competitor_page_ids(csv_comp_ids))
+        # Per-row URLs from CSV (override CLI args if present)
+        row_brand_url = (row.get("brand_url") or "").strip() or brand_url
+        row_comp_urls = list(cli_competitor_urls)
+        csv_comp_urls = (row.get("competitor_urls") or "").strip()
+        if csv_comp_urls:
+            row_comp_urls = _parse_competitor_urls(csv_comp_urls)
 
         if not brand:
             logger.warning("Row %d: empty brand name, skipping", i)
@@ -497,8 +501,8 @@ def _run_batch_audit(
             output=str(batch_dir),
             dry_run=dry_run,
             tracker=tracker,
-            brand_page_id=row_brand_page_id,
-            competitor_page_ids=row_comp_page_ids,
+            brand_url=row_brand_url,
+            competitor_urls=row_comp_urls,
         )
 
 
@@ -508,12 +512,18 @@ def _run_refresh(
     brand_name: str,
     dry_run: bool,
     tracker: RunTracker,
-    brand_page_id: str | None = None,
-    competitor_page_ids: dict[str, str] | None = None,
+    brand_url: str | None = None,
+    competitor_urls: list[dict] | None = None,
 ) -> None:
     """Re-scrape, diff against previous data, generate new concepts."""
     logger.info("=" * 50)
     logger.info("REFRESH: %s", brand_name)
+
+    if not brand_url:
+        raise ValueError(
+            "brand_url is required. Pass --brand-url with the full "
+            "Meta Ad Library URL for the client brand."
+        )
 
     # Look up brand + competitors from DB
     conn = config.get_connection()
@@ -551,7 +561,7 @@ def _run_refresh(
     finally:
         conn.close()
 
-    competitor_page_ids = competitor_page_ids or {}
+    competitor_urls = competitor_urls or []
 
     steps = [
         "Scrape via Apify API",
@@ -578,14 +588,10 @@ def _run_refresh(
 
         # 1. Re-scrape via Apify
         progress.set_postfix_str("Scrape via Apify API")
-        competitor_list = [{"name": c, "page_id": competitor_page_ids.get(c)}
-                           for c in competitors]
         raw = apify_scraper.run(
             brand_name=brand_name,
-            page_id=brand_page_id,
-            competitors=competitor_list,
-            country="IN",
-            max_ads=config.MAX_ADS_DEFAULT,
+            brand_url=brand_url,
+            competitors=competitor_urls,
         )
         progress.update(1)
 
@@ -778,32 +784,34 @@ def _fetch_competitor_names(client_brand_id: int) -> list[str]:
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
 
-def _add_page_id_args(subparser: argparse.ArgumentParser) -> None:
-    """Add --brand-page-id and --competitor-page-ids to a subparser."""
+def _add_url_args(subparser: argparse.ArgumentParser) -> None:
+    """Add --brand-url and --competitor-urls to a subparser."""
     subparser.add_argument(
-        "--brand-page-id", default=None,
-        help="Facebook Page ID of the client brand (optional)",
+        "--brand-url", default=None,
+        help="Full Meta Ad Library URL for the client brand "
+             "(must contain view_all_page_id)",
     )
     subparser.add_argument(
-        "--competitor-page-ids", default=None,
-        help='Page IDs as "Name:PageID,Name:PageID" (optional)',
+        "--competitor-urls", default=None,
+        help='Competitor URLs as "Name:URL,Name:URL" '
+             '(split on first colon — URLs contain colons)',
     )
 
 
-def _parse_competitor_page_ids(raw: str | None) -> dict[str, str]:
-    """Parse ``"Plum:789,Forest Essentials:101"`` into a dict."""
+def _parse_competitor_urls(raw: str | None) -> list[dict]:
+    """Parse ``"Plum:https://...,Forest Essentials:https://..."`` into list of dicts."""
     if not raw:
-        return {}
-    result: dict[str, str] = {}
+        return []
+    result: list[dict] = []
     for entry in raw.split(","):
         entry = entry.strip()
         if not entry or ":" not in entry:
             continue
-        name, pid = entry.split(":", 1)
+        name, url = entry.split(":", 1)
         name = name.strip()
-        pid = pid.strip()
-        if name and pid:
-            result[name] = pid
+        url = url.strip()
+        if name and url:
+            result.append({"name": name, "url": url})
     return result
 
 

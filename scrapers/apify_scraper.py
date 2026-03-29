@@ -13,7 +13,7 @@ import logging
 from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
-from urllib.parse import quote
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 from apify_client import ApifyClient
@@ -34,15 +34,81 @@ logger = logging.getLogger(__name__)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# URL helpers
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _extract_page_id(url: str) -> str:
+    """
+    Extract ``view_all_page_id`` from a Meta Ad Library URL.
+
+    Also validates that the URL is not a keyword search and warns if
+    active_status or country differ from expected defaults.
+    """
+    parsed = urlparse(url)
+    params = parse_qs(parsed.query)
+
+    # ── page_id (required) ────────────────────────────────────────────────
+    page_ids = params.get("view_all_page_id", [])
+    if not page_ids or not page_ids[0].strip():
+        raise ValueError(
+            "Could not find view_all_page_id in URL. "
+            "Go to facebook.com/ads/library, search your brand with "
+            "country=IN and search_type=page, click View Ads, "
+            "then copy the full URL from your browser bar."
+        )
+    page_id = page_ids[0].strip()
+
+    # ── search_type (must not be keyword) ─────────────────────────────────
+    search_types = params.get("search_type", [])
+    for st in search_types:
+        if "keyword" in st.lower():
+            raise ValueError(
+                f"URL contains search_type={st!r} — keyword search is not "
+                "allowed. Use a page-level URL with view_all_page_id instead."
+            )
+
+    # ── active_status (warn if not "active") ──────────────────────────────
+    active_vals = params.get("active_status", [])
+    if active_vals and active_vals[0].lower() != "active":
+        logger.warning(
+            "URL has active_status=%s — overriding to 'active' in actor URL",
+            active_vals[0],
+        )
+
+    # ── country (warn if not "IN") ────────────────────────────────────────
+    country_vals = params.get("country", [])
+    if country_vals and country_vals[0].upper() != "IN":
+        logger.warning(
+            "URL has country=%s — overriding to 'IN' in actor URL",
+            country_vals[0],
+        )
+
+    return page_id
+
+
+def _build_actor_url(page_id: str) -> str:
+    """Build a clean, controlled Meta Ad Library URL for the Apify actor."""
+    return (
+        "https://www.facebook.com/ads/library/"
+        "?active_status=active"
+        "&ad_type=all"
+        "&country=IN"
+        f"&view_all_page_id={page_id}"
+        "&media_type=all"
+        "&search_type=page"
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Public API
 # ══════════════════════════════════════════════════════════════════════════════
 
 def run(
     brand_name: str,
-    page_id: Optional[str],
+    brand_url: str,
     competitors: list[dict],
     country: str = "IN",
-    max_ads: int = MAX_ADS_DEFAULT,
+    max_ads: int = 10,
     skip_video: bool = False,
 ) -> dict:
     """
@@ -52,15 +118,16 @@ def run(
     ----------
     brand_name : str
         Client brand name.
-    page_id : str | None
-        Facebook Page ID for the client brand.  Preferred over name search.
+    brand_url : str
+        Full Meta Ad Library URL for the client brand (must contain
+        ``view_all_page_id``).
     competitors : list[dict]
-        Each entry: ``{"name": "...", "page_id": "123456"}``
-        (``page_id`` may be ``None``).
+        Each entry: ``{"name": "...", "url": "https://..."}``
     country : str
-        ISO country code for the Ad Library filter (default ``"IN"``).
+        ISO country code (default ``"IN"``). Used only for logging — the
+        actor URL always forces ``country=IN``.
     max_ads : int
-        Maximum ads to retrieve per actor call.
+        Maximum ads to retrieve per actor call (default 10, hard cap 50).
     skip_video : bool
         If True, skip video download/transcription and thumbnail download.
 
@@ -69,17 +136,30 @@ def run(
     dict
         ``{"brand": [ad_dict, ...], "competitors": {name: [ad_dict, ...]}}``
     """
+    # ── Startup validation ────────────────────────────────────────────────
+    if max_ads > 50:
+        raise ValueError(
+            "max_ads=%d is too high for development. "
+            "Use 50 or less to protect credits." % max_ads
+        )
+
     if not APIFY_API_KEY:
         raise RuntimeError(
             "APIFY_API_KEY is not set. Add it to .env before running."
         )
 
+    brand_page_id = _extract_page_id(brand_url)
+    clean_url = _build_actor_url(brand_page_id)
+
+    logger.info("Starting scrape: brand=%s page_id=%s max_ads=%d",
+                brand_name, brand_page_id, max_ads)
+    logger.info("Actor URL (clean): %s", clean_url)
+
     client = ApifyClient(APIFY_API_KEY)
 
     # ── Brand ─────────────────────────────────────────────────────────────
-    logger.info("Fetching ads for brand '%s' (page_id=%s)", brand_name, page_id)
     brand_ads = _fetch_and_map(
-        client, brand_name, page_id, country, max_ads, skip_video,
+        client, brand_name, brand_page_id, max_ads, skip_video,
     )
 
     result: dict = {
@@ -90,14 +170,17 @@ def run(
     # ── Competitors ───────────────────────────────────────────────────────
     for comp in competitors:
         comp_name = comp["name"]
-        comp_pid = comp.get("page_id")
+        comp_url = comp["url"]
         random_delay()
+        comp_page_id = _extract_page_id(comp_url)
+        comp_clean_url = _build_actor_url(comp_page_id)
         logger.info(
             "Fetching ads for competitor '%s' (page_id=%s)",
-            comp_name, comp_pid,
+            comp_name, comp_page_id,
         )
+        logger.info("Actor URL (clean): %s", comp_clean_url)
         comp_ads = _fetch_and_map(
-            client, comp_name, comp_pid, country, max_ads, skip_video,
+            client, comp_name, comp_page_id, max_ads, skip_video,
         )
         result["competitors"][comp_name] = comp_ads
 
@@ -111,18 +194,19 @@ def run(
 def _fetch_and_map(
     client: ApifyClient,
     name: str,
-    page_id: Optional[str],
-    country: str,
+    page_id: str,
     max_ads: int,
     skip_video: bool = False,
 ) -> list[dict]:
     """Run Apify actor for one brand/competitor, save raw JSON, return mapped ads."""
-    url = _build_start_url(name, page_id, country)
-    logger.info("Start URL: %s", url)
+    clean_url = _build_actor_url(page_id)
 
     run_input = {
-        "startUrls": [{"url": url}],
+        "startUrls": [{"url": clean_url}],
         "maxItems": max_ads,
+        "maxResults": max_ads,
+        "resultsLimit": max_ads,
+        "limit": max_ads,
     }
 
     actor_run = client.actor(APIFY_ACTOR_ID).call(
@@ -130,10 +214,15 @@ def _fetch_and_map(
         timeout_secs=APIFY_TIMEOUT_SECS,
     )
 
-    items = list(
+    raw_items = list(
         client.dataset(actor_run["defaultDatasetId"]).iterate_items()
     )
-    logger.info("Apify returned %d items for '%s'", len(items), name)
+    raw_count = len(raw_items)
+    items = raw_items[:max_ads]
+    logger.info(
+        "Apify returned %d items before cap, %d after cap (max=%d)",
+        raw_count, len(items), max_ads,
+    )
 
     # Save raw response for debugging
     _save_raw(name, items)
@@ -248,29 +337,6 @@ def _download_thumbnail(url: str, ad_library_id: str, brand_slug: str) -> Option
     except Exception as exc:
         logger.warning("Thumbnail download failed for ad %s: %s", ad_library_id, exc)
         return None
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# URL construction
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _build_start_url(name: str, page_id: Optional[str], country: str) -> str:
-    """Build Meta Ad Library URL for the Apify actor's startUrls input."""
-    if page_id:
-        return (
-            "https://www.facebook.com/ads/library/"
-            "?active_status=all&ad_type=all"
-            f"&country={country}"
-            f"&view_all_page_id={page_id}"
-            "&media_type=all"
-        )
-    return (
-        "https://www.facebook.com/ads/library/"
-        "?active_status=all&ad_type=all"
-        f"&country={country}"
-        f"&q={quote(name)}"
-        "&search_type=page&media_type=all"
-    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -425,8 +491,10 @@ def _save_raw(name: str, items: list[dict]) -> None:
 
 def _parse_competitors_arg(raw: str) -> list[dict]:
     """
-    Parse CLI competitor string ``"Name:PageID,Name:PageID"`` into list of dicts.
-    PageID is optional — ``"Name:"`` or ``"Name"`` means page_id=None.
+    Parse CLI competitor string ``"Name:URL,Name:URL"`` into list of dicts.
+
+    Split on the *first* colon only, since URLs contain colons.
+    Each entry must have both a name and a URL.
     """
     result: list[dict] = []
     for entry in raw.split(","):
@@ -434,13 +502,21 @@ def _parse_competitors_arg(raw: str) -> list[dict]:
         if not entry:
             continue
         if ":" in entry:
-            parts = entry.split(":", 1)
-            name = parts[0].strip()
-            pid = parts[1].strip() or None
+            name, url = entry.split(":", 1)
+            name = name.strip()
+            url = url.strip()
+            if name and url:
+                result.append({"name": name, "url": url})
+            elif name:
+                raise ValueError(
+                    f"Competitor '{name}' is missing a URL. "
+                    "Format: Name:URL,Name:URL"
+                )
         else:
-            name = entry
-            pid = None
-        result.append({"name": name, "page_id": pid})
+            raise ValueError(
+                f"Competitor entry '{entry}' is missing a URL. "
+                "Format: Name:URL,Name:URL"
+            )
     return result
 
 
@@ -458,32 +534,30 @@ def _cli() -> None:
         description="Scrape Meta Ad Library via Apify actor.",
     )
     parser.add_argument("--brand", required=True, help="Client brand name")
-    parser.add_argument("--page-id", default=None,
-                        help="Facebook Page ID for the brand (preferred over name search)")
+    parser.add_argument("--brand-url", required=True,
+                        help="Full Meta Ad Library URL for the brand "
+                             "(must contain view_all_page_id)")
     parser.add_argument("--competitors", default="",
-                        help='Competitors as "Name:PageID,Name:PageID" (PageID optional)')
-    parser.add_argument("--country", default="IN",
-                        help="ISO country code (default: IN)")
-    parser.add_argument("--max-ads", type=int, default=MAX_ADS_DEFAULT,
-                        help=f"Max ads per actor call (default: {MAX_ADS_DEFAULT})")
+                        help='Competitors as "Name:URL,Name:URL"')
+    parser.add_argument("--max-ads", type=int, default=10,
+                        help="Max ads per actor call (default: 10, max: 50)")
     parser.add_argument("--skip-video", action="store_true",
                         help="Skip video download/transcription (for fast testing)")
 
     args = parser.parse_args()
-    competitors = _parse_competitors_arg(args.competitors)
+    competitors = _parse_competitors_arg(args.competitors) if args.competitors else []
 
     logger.info(
-        "Starting Apify scraper: brand='%s', page_id=%s, competitors=%s, "
-        "country=%s, max_ads=%d, skip_video=%s",
-        args.brand, args.page_id, competitors,
-        args.country, args.max_ads, args.skip_video,
+        "Starting Apify scraper: brand='%s', brand_url=%s, competitors=%s, "
+        "max_ads=%d, skip_video=%s",
+        args.brand, args.brand_url, competitors,
+        args.max_ads, args.skip_video,
     )
 
     result = run(
         brand_name=args.brand,
-        page_id=args.page_id,
+        brand_url=args.brand_url,
         competitors=competitors,
-        country=args.country,
         max_ads=args.max_ads,
         skip_video=args.skip_video,
     )
