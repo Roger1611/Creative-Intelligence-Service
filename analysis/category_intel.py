@@ -83,6 +83,10 @@ def run(brand_name: str, competitor_names: list[str]) -> dict:
     patterns      = _derive_patterns(trigger_analysis, format_analysis, duration_analysis, cta_analysis, hook_structure_analysis)
     opportunities = _derive_opportunities(trigger_analysis, format_analysis)
 
+    # ── Audit V2: hook database and visual pattern stats ──────────────────
+    hook_database = _build_hook_database(all_analyses, all_ads, profitable_ads, brand_rows)
+    visual_pattern_stats = _visual_pattern_stats(all_analyses, profitable_ads)
+
     intel = {
         "brand_name":              brand_name,
         "competitors_analysed":    competitor_names,
@@ -98,6 +102,8 @@ def run(brand_name: str, competitor_names: list[str]) -> dict:
         "per_brand_summary":       per_brand,
         "patterns":                patterns,
         "opportunities":           opportunities,
+        "hook_database":           hook_database,
+        "visual_pattern_stats":    visual_pattern_stats,
     }
 
     _write_processed(brand_name, intel)
@@ -445,6 +451,142 @@ def _derive_opportunities(trigger_analysis: dict, format_analysis: dict) -> list
             )
 
     return opportunities
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Audit V2: Hook database and visual pattern stats
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _build_hook_database(
+    all_analyses: list[dict],
+    all_ads: list[dict],
+    profitable_ads: list[dict],
+    brand_rows: list[dict],
+) -> dict:
+    """
+    Extract actual hook text from profitable competitor ads, clustered by trigger.
+    Returns dict keyed by psychological_trigger with hooks sorted by duration.
+    """
+    profitable_ad_ids = {a["id"] for a in profitable_ads}
+    ad_id_to_ad = {a["id"]: a for a in all_ads}
+    brand_id_to_name = {b["id"]: b["name"] for b in brand_rows}
+    total_profitable = len(profitable_ad_ids) or 1
+
+    # Collect hooks by trigger
+    trigger_hooks: dict[str, list[dict]] = defaultdict(list)
+
+    for analysis in all_analyses:
+        ad_id = analysis.get("ad_id")
+        trigger = analysis.get("psychological_trigger")
+        if not trigger or ad_id not in profitable_ad_ids:
+            continue
+
+        ad = ad_id_to_ad.get(ad_id)
+        if not ad:
+            continue
+
+        ad_copy = ad.get("ad_copy") or ""
+        if not ad_copy.strip():
+            continue
+
+        # Extract hook: first line of ad_copy, capped at 100 chars
+        hook_text = ad_copy.split("\n")[0].strip()[:100]
+
+        # Spoken hook from transcript
+        spoken_hook = None
+        transcript = ad.get("transcript")
+        if transcript:
+            # First sentence: split on period, question mark, or exclamation
+            first_sentence = transcript.strip()
+            for delim in [".", "?", "!"]:
+                idx = first_sentence.find(delim)
+                if idx != -1:
+                    first_sentence = first_sentence[: idx + 1]
+                    break
+            spoken_hook = first_sentence[:100]
+
+        brand_name = brand_id_to_name.get(ad.get("brand_id"), "Unknown")
+
+        trigger_hooks[trigger].append({
+            "text": hook_text,
+            "spoken_hook": spoken_hook,
+            "source_brand": brand_name,
+            "duration_days": ad.get("duration_days") or 0,
+            "ad_library_id": ad.get("ad_library_id", ""),
+        })
+
+    # Build final result: sort by duration desc, cap at 5 per trigger
+    result: dict = {}
+    for trigger, hooks in trigger_hooks.items():
+        hooks.sort(key=lambda h: h["duration_days"], reverse=True)
+        count = len(hooks)
+        result[trigger] = {
+            "count": count,
+            "pct_of_winners": round(count / total_profitable * 100, 1),
+            "hooks": hooks[:5],
+        }
+
+    return result
+
+
+def _visual_pattern_stats(
+    all_analyses: list[dict],
+    profitable_ads: list[dict],
+) -> dict:
+    """
+    Aggregate visual_layout keywords across profitable ads to find dominant visual patterns.
+    """
+    profitable_ad_ids = {a["id"] for a in profitable_ads}
+
+    face_keywords = {"face", "close-up", "closeup", "portrait", "person", "woman", "man", "selfie"}
+    minimal_keywords = {"white background", "minimal", "clean", "simple background"}
+    text_overlay_keywords = {"text overlay", "text", "overlay", "caption", "headline"}
+    before_after_keywords = {"before", "after", "transformation", "comparison", "split"}
+    product_keywords = {"product", "bottle", "packaging", "jar", "tube", "box"}
+    ugc_keywords = {"ugc", "phone", "selfie", "raw", "user-generated", "testimonial video", "handheld"}
+
+    counts = {
+        "face_dominant": 0,
+        "text_overlay": 0,
+        "minimal_aesthetic": 0,
+        "before_after": 0,
+        "product_focused": 0,
+        "ugc_style": 0,
+    }
+    total_with_layout = 0
+
+    for analysis in all_analyses:
+        ad_id = analysis.get("ad_id")
+        visual_layout = analysis.get("visual_layout")
+        if ad_id not in profitable_ad_ids or not visual_layout:
+            continue
+
+        total_with_layout += 1
+        layout_lower = visual_layout.lower()
+
+        if any(kw in layout_lower for kw in face_keywords):
+            counts["face_dominant"] += 1
+        if any(kw in layout_lower for kw in minimal_keywords):
+            counts["minimal_aesthetic"] += 1
+        if any(kw in layout_lower for kw in text_overlay_keywords):
+            counts["text_overlay"] += 1
+        if any(kw in layout_lower for kw in before_after_keywords):
+            counts["before_after"] += 1
+        if any(kw in layout_lower for kw in product_keywords):
+            counts["product_focused"] += 1
+        if any(kw in layout_lower for kw in ugc_keywords):
+            counts["ugc_style"] += 1
+
+    denom = total_with_layout or 1
+    return {
+        "face_dominant_pct": round(counts["face_dominant"] / denom * 100, 1),
+        "text_overlay_pct": round(counts["text_overlay"] / denom * 100, 1),
+        "minimal_aesthetic_pct": round(counts["minimal_aesthetic"] / denom * 100, 1),
+        "before_after_pct": round(counts["before_after"] / denom * 100, 1),
+        "product_focused_pct": round(counts["product_focused"] / denom * 100, 1),
+        "ugc_style_pct": round(counts["ugc_style"] / denom * 100, 1),
+        "total_analyzed": total_with_layout,
+    }
 
 
 # ══════════════════════════════════════════════════════════════════════════════

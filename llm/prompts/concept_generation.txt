@@ -11,6 +11,18 @@ $competitor_intel
 Waste diagnosis (gaps to fill):
 $waste_diagnosis
 
+Proven competitor hooks (use as inspiration — do NOT copy verbatim):
+$hook_database
+
+Creative gaps to fill (prioritize these):
+$gap_analysis
+
+Category winning patterns:
+$winning_patterns
+
+Visual patterns that win in this category:
+$visual_patterns
+
 Return a JSON array of exactly $num_concepts concept objects. Each concept must have this exact structure:
 
 {
@@ -27,7 +39,7 @@ Return a JSON array of exactly $num_concepts concept objects. Each concept must 
   "entity_id_tag": "<hook_structure + '_' + 3-word visual setting, e.g. 'transformation_skincare_before_after', 'social_proof_ugc_testimonial_face'>",
   "trust_stack": ["<at least 2 Indian trust signals from: cod_mention, upi_discount, social_proof_number, certification_badge, whatsapp_cta, price_anchor, emi_mention, free_delivery>"],
   "thumb_stop_score": <integer 1-10>,
-  "competitor_reference": "<inspired by [competitor name] ad running X days — adapted for $brand_name by [how it differs]>",
+  "data_backing": "<Why This Works: {trigger} angle accounts for X% of profitable competitor ads. {format} format has Y% win rate. This concept fills Gap: {specific gap from gap_analysis}>",
   "differentiation_note": "<how this concept differs from the brand's existing creatives>"
 }
 
@@ -80,6 +92,19 @@ TRUST STACK (Indian market specifics — MANDATORY):
 - At least 5 concepts must include certification_badge ("dermat-tested", "FSSAI certified", "toxin-free").
 - At least 3 concepts must include whatsapp_cta.
 
+DATA-LINKED CONCEPTS (mandatory):
+- Every concept must fill at least one gap from the gap_analysis list
+- Every hook must be inspired by (but not copy) a real hook from the hook_database
+- The data_backing field must reference REAL numbers from the competitor_intel and winning_patterns — do not invent statistics
+- If a concept uses a transformation hook, the data_backing must cite the actual transformation hook percentage from winning_patterns
+- Visual directions must align with the visual_patterns data — if face_dominant_pct is high, prioritize face-in-frame concepts
+
+VISUAL DIRECTION ALIGNMENT:
+- If visual_patterns shows face_dominant_pct > 50%, at least 60% of concepts should include a human face in visual_direction
+- If text_overlay_pct > 60%, every concept must include a text overlay specification in visual_direction
+- If ugc_style_pct > 30%, at least 30% of concepts should use UGC/raw aesthetic in visual_direction
+- These are not arbitrary rules — they are derived from what's actually winning in this category right now
+
 Rules:
 - psychological_angle MUST be exactly one of the 10 values listed.
 - format_recommendation MUST be exactly one of: static, carousel, video.
@@ -87,7 +112,7 @@ Rules:
 - Every hook must be specific to "$brand_name" products — no generic hooks like "Transform your skin" without naming the brand or product.
 - body_script must be 3-5 sentences, max 150 words.
 - cta_variations must contain exactly 3 options.
-- competitor_reference must cite a real competitor from the intel provided.
+- data_backing must reference real numbers from the data provided — do not fabricate statistics.
 - trust_stack must contain at least 2 signals per concept.
 - entity_id_tag must be unique across all concepts in this batch.
 - Return ONLY the JSON array. No markdown fences, no explanation outside the JSON.

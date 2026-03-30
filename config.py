@@ -101,6 +101,10 @@ VALID_CATEGORIES: list[str] = [
 
 VALID_CREATIVE_TYPES: list[str] = ["static", "carousel", "video", "reel"]
 
+# Audit V2 metrics
+CREATIVE_COVERAGE_BENCHMARK: int = 15  # Meta Andromeda demands 15-20+ variations
+REFRESH_BENCHMARK_DAYS: int = 10       # Optimal refresh window in days
+
 # Set FORCE_REANALYZE=1 to skip the analysis cache and re-analyze all ads.
 FORCE_REANALYZE: bool = os.getenv("FORCE_REANALYZE", "0") == "1"
 

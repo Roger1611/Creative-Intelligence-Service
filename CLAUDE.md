@@ -47,12 +47,12 @@ config.py         → Central config, loads .env, initializes DB on first run
 | llm/client.py | ✅ Done | OpenRouter via openai SDK; task→model routing (MODEL_MAP); multimodal vision; retries + fallback; cost logging |
 | llm/prompts/*.txt | ✅ Done | competitor_deconstruction, waste_diagnosis, concept_generation |
 | llm/chains.py | ✅ Done | chain_competitor_analysis, chain_waste_diagnosis, chain_concept_generation, chain_full; DB + JSON output |
-| deliverables/audit_generator.py | ✅ Done | 3-page PDF: cover+snapshot, competitor comparison, sample hooks+CTA; CLI --brand --output |
+| deliverables/audit_generator.py | ✅ Done | V2: 9-page intelligence-grade audit with 5-layer data; CLI --brand --output |
 | deliverables/sprint_generator.py | ✅ Done | Full sprint PDF+JSON: exec summary, competitor intel, 50+ concepts by angle, creative calendar; CLI --brand --batch --output |
 | feedback/performance_parser.py | ✅ Done | Meta CSV parser; 3-strategy ad matching; fuzzy concept linking; CLI --file --brand |
 | feedback/loop.py | ✅ Done | Angle/hook/format analysis; winning patterns text; ROAS-weighted next-batch weights; CLI --category/--brand |
 | pipeline.py | ✅ Done | audit, sprint, batch-audit, refresh modes; --dry-run; tqdm progress; RunTracker summary |
-| tests/ | ✅ Done | 78 tests: structurer dedup+diversity, fatigue scorer edge cases, profitability filter, prompt formatting |
+| tests/ | ✅ Done | 154 tests: structurer, fatigue scorer, profitability, prompts, entity diversity, audit PDF generation, gap analysis |
 
 ## Commands
 
@@ -182,3 +182,37 @@ Keyword/name search removed — scraper now requires full Meta Ad Library URLs. 
 - **apify_scraper.py**: `run(brand_url=...)` replaces `run(page_id=...)`; `_extract_page_id(url)` parses + validates URL; `_build_actor_url(page_id)` always reconstructs clean URL; keyword search URLs rejected; `max_ads` default 10, hard cap 50; 4 limit fields + client-side slice
 - **pipeline.py**: `--brand-page-id` → `--brand-url`; `--competitor-page-ids` → `--competitor-urls` (format: `"Name:URL,Name:URL"`); `brand_url` required for all modes except dry-run
 - 115 tests pass
+
+## Audit V2 (2026-03-30)
+
+Upgraded from 3-page PDF to 9-page intelligence-grade audit. Every number comes from real data (DB or processed JSON), graceful degradation when data is missing.
+
+### New metrics (config.py + analysis/)
+- `CREATIVE_COVERAGE_BENCHMARK = 15`, `REFRESH_BENCHMARK_DAYS = 10` in config.py
+- `_creative_coverage_ratio()` in fatigue_scorer.py — ratio of client ads to max(competitor avg, benchmark)
+- `_creative_fatigue_index()` in fatigue_scorer.py — severity classification (LOW/MODERATE/HIGH/CRITICAL)
+- `_hook_diversity_score()` in fatigue_scorer.py — trigger + hook structure coverage score (0–100)
+- `_build_hook_database()` in category_intel.py — real hook text from profitable ads, clustered by trigger
+- `_visual_pattern_stats()` in category_intel.py — face/text/UGC/before-after/product/minimal percentages
+
+### Data flow
+- fatigue_scorer.run() → writes `creative_coverage`, `fatigue_index`, `hook_diversity` to `{brand}_fatigue.json`
+- category_intel.run() → writes `hook_database`, `visual_pattern_stats` to `{brand}_category_intelligence.json`
+- audit_generator._gather_data() → loads both JSON files + DB data → passes to all page functions
+
+### PDF structure (9 pages)
+1. Executive Diagnosis — dynamic verdict, 4 metric cards, format mix
+2. Ad Account Health — coverage ratio, fatigue index, format distribution gap, hook diversity checklist
+3. Competitor Winning Model — trigger distribution, format performance, key patterns
+4. Hook Intelligence — real hooks from profitable ads by psychological angle
+5. Visual Pattern Analysis — what winning ads look like (face/text/UGC percentages)
+6. Gap Analysis — angle, format, and hook structure gaps with callout boxes
+7. Creative Strategy Blueprint — creative matrix, 14-day calendar, metric targets
+8. Data-Backed Concepts — sample hooks with "Why This Works" justification
+9. Priority Action Plan — actions from waste report + gaps, "What This Audit Didn't Cover"
+
+### Concept generation data-linking
+- `chain_concept_generation()` now passes `hook_database`, `gap_analysis`, `winning_patterns`, `visual_patterns` to prompt
+- Prompt requires `data_backing` field (replaces `competitor_reference`) citing real numbers
+- `_save_concepts()` appends `[DATA BACKING]` to body_script for downstream use
+- 154 tests pass

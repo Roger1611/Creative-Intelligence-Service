@@ -397,6 +397,39 @@ def chain_concept_generation(
         }
         waste = dict(waste_report) if waste_report else {}
 
+        # Load category intelligence for hook database and visual patterns
+        # Analysis modules use lowercase + underscores for file slugs
+        intel_slug = client_brand_name.lower().replace(" ", "_")
+        intel_path = PROC_DIR / f"{intel_slug}_category_intelligence.json"
+        category_intel_data = {}
+        if intel_path.exists():
+            try:
+                category_intel_data = json.loads(
+                    intel_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                logger.warning("Could not load category intel from %s", intel_path)
+
+        # Hook database — top hooks from profitable competitors (slimmed)
+        hook_database = category_intel_data.get("hook_database", {})
+        hook_db_for_prompt = {}
+        for trigger, tdata in hook_database.items():
+            hooks = tdata.get("hooks", [])
+            if hooks:
+                hook_db_for_prompt[trigger] = [
+                    {"text": h["text"], "brand": h["source_brand"],
+                     "days": h["duration_days"]}
+                    for h in hooks[:3]
+                ]
+
+        opportunities = category_intel_data.get("opportunities", [])
+        patterns = category_intel_data.get("patterns", [])
+        visual_stats = category_intel_data.get("visual_pattern_stats", {})
+
+        if not hook_db_for_prompt:
+            logger.warning(
+                "No hook database available — concepts will be less "
+                "data-linked. Run full pipeline first.")
+
         prompt_template = _load_prompt("concept_generation.txt")
         prompt = prompt_template.safe_substitute(
             brand_name=client_brand_name,
@@ -405,6 +438,10 @@ def chain_concept_generation(
             brand_context=json.dumps(brand_context, ensure_ascii=False, indent=2),
             competitor_intel=json.dumps(proven_intel, ensure_ascii=False, indent=2),
             waste_diagnosis=json.dumps(waste, ensure_ascii=False, indent=2),
+            hook_database=json.dumps(hook_db_for_prompt, ensure_ascii=False, indent=2),
+            gap_analysis=json.dumps(opportunities, ensure_ascii=False, indent=2),
+            winning_patterns=json.dumps(patterns, ensure_ascii=False, indent=2),
+            visual_patterns=json.dumps(visual_stats, ensure_ascii=False, indent=2),
         )
 
         logger.info(
@@ -884,6 +921,12 @@ def _save_waste_report(conn, brand_id: int, report: dict) -> None:
 def _save_concepts(conn, brand_id: int, batch_id: str, concepts: list[dict]) -> None:
     """Insert creative_concepts rows for a batch."""
     for concept in concepts:
+        # Append data_backing to body_script so it surfaces in audit PDFs
+        body = concept.get("body_script") or ""
+        data_backing = concept.get("data_backing") or ""
+        if data_backing:
+            body = f"{body}\n\n[DATA BACKING] {data_backing}"
+
         conn.execute(
             """
             INSERT INTO creative_concepts (
@@ -897,7 +940,7 @@ def _save_concepts(conn, brand_id: int, batch_id: str, concepts: list[dict]) -> 
                 brand_id,
                 batch_id,
                 concept.get("hook"),
-                concept.get("body_script"),
+                body,
                 concept.get("visual_direction"),
                 json.dumps(
                     concept.get("cta_variations", []), ensure_ascii=False

@@ -28,9 +28,12 @@ from pathlib import Path
 from typing import Optional
 
 from config import (
+    CREATIVE_COVERAGE_BENCHMARK,
     FATIGUE_AD_MIN_DAYS,
     PROC_DIR,
     PROFITABLE_AD_MIN_DAYS,
+    PSYCHOLOGICAL_TRIGGERS,
+    REFRESH_BENCHMARK_DAYS,
     VALID_CREATIVE_TYPES,
     get_connection,
 )
@@ -137,6 +140,15 @@ def run(brand_name: str, competitor_names: list[str]) -> dict:
         watch_ads=watch_ads,
     )
 
+    # ── Audit V2 metrics ─────────────────────────────────────────────────────
+    creative_coverage = _creative_coverage_ratio(len(client_ads), competitor_avg_count)
+
+    durations = [a["duration_days"] for a in client_ads if a.get("duration_days") is not None]
+    avg_duration = sum(durations) / len(durations) if durations else 0.0
+    fatigue_index = _creative_fatigue_index(avg_duration)
+
+    hook_diversity = _hook_diversity_score(client_id)
+
     result = {
         "brand_name":               brand_name,
         "generated_at":             datetime.utcnow().isoformat(),
@@ -151,6 +163,9 @@ def run(brand_name: str, competitor_names: list[str]) -> dict:
         "warning_ads":  [_ad_summary(a) for a in warning_ads],
         "watch_ads":    [_ad_summary(a) for a in watch_ads],
         "recommendations":          recommendations,
+        "creative_coverage":        creative_coverage,
+        "fatigue_index":            fatigue_index,
+        "hook_diversity":           hook_diversity,
     }
 
     _persist_waste_report(brand_name, client_id, result)
@@ -441,6 +456,112 @@ def _write_processed(brand_name: str, data: dict) -> Path:
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     logger.info("Fatigue report -> %s", path)
     return path
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Audit V2 metric functions
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _creative_coverage_ratio(
+    client_ad_count: int, competitor_avg_count: float,
+) -> dict:
+    """Ratio of client active ads to the higher of competitor avg or benchmark."""
+    benchmark = max(int(competitor_avg_count), CREATIVE_COVERAGE_BENCHMARK)
+    if benchmark == 0:
+        benchmark = CREATIVE_COVERAGE_BENCHMARK
+    ratio = client_ad_count / benchmark if benchmark > 0 else 0.0
+    deficit = max(0, benchmark - client_ad_count)
+    if ratio < 1.0:
+        deficit_pct = (1.0 - ratio) * 100
+        interpretation = f"Underfeeding the algorithm by {deficit_pct:.0f}%"
+    else:
+        interpretation = "Creative volume meets category benchmarks"
+    return {
+        "ratio": round(ratio, 3),
+        "client_count": client_ad_count,
+        "benchmark": benchmark,
+        "deficit": deficit,
+        "interpretation": interpretation,
+    }
+
+
+def _creative_fatigue_index(
+    avg_duration_days: float, refresh_benchmark: int | None = None,
+) -> dict:
+    """Index of average ad duration relative to optimal refresh window."""
+    if refresh_benchmark is None:
+        refresh_benchmark = REFRESH_BENCHMARK_DAYS
+    if refresh_benchmark == 0:
+        refresh_benchmark = REFRESH_BENCHMARK_DAYS
+    index = avg_duration_days / refresh_benchmark if refresh_benchmark > 0 else 0.0
+    if index < 1.0:
+        severity = "LOW"
+    elif index <= 1.5:
+        severity = "MODERATE"
+    elif index <= 2.0:
+        severity = "HIGH"
+    else:
+        severity = "CRITICAL"
+
+    if index >= 1.0:
+        excess_pct = (index - 1.0) * 100
+        interpretation = f"Average ad running {excess_pct:.0f}% past optimal refresh window"
+    else:
+        interpretation = "Average ad duration within optimal refresh window"
+
+    return {
+        "index": round(index, 2),
+        "avg_duration": round(avg_duration_days, 1),
+        "benchmark": refresh_benchmark,
+        "severity": severity,
+        "interpretation": interpretation,
+    }
+
+
+def _hook_diversity_score(client_brand_id: int) -> dict:
+    """Score hook/trigger diversity for a client brand from DB data."""
+    from analysis.category_intel import HOOK_STRUCTURES
+
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT aa.psychological_trigger, aa.hook_structure
+               FROM ad_analysis aa
+               JOIN ads a ON a.id = aa.ad_id
+               WHERE a.brand_id = ? AND a.is_active = 1""",
+            (client_brand_id,),
+        ).fetchall()
+
+    triggers_used: set[str] = set()
+    hook_structures_used: set[str] = set()
+    for row in rows:
+        if row["psychological_trigger"]:
+            triggers_used.add(row["psychological_trigger"])
+        if row["hook_structure"]:
+            hook_structures_used.add(row["hook_structure"])
+
+    total_triggers = len(PSYCHOLOGICAL_TRIGGERS)
+    total_hooks = len(HOOK_STRUCTURES)
+
+    trigger_component = (len(triggers_used) / total_triggers * 50) if total_triggers > 0 else 0
+    hook_component = (len(hook_structures_used) / total_hooks * 50) if total_hooks > 0 else 0
+    score = round(trigger_component + hook_component, 1)
+
+    triggers_missing = [t for t in PSYCHOLOGICAL_TRIGGERS if t not in triggers_used]
+    hook_structures_missing = [h for h in HOOK_STRUCTURES if h not in hook_structures_used]
+
+    interpretation = (
+        f"Using {len(triggers_used)}/{total_triggers} psychological angles — "
+        f"{len(triggers_missing)} proven angles untapped"
+    )
+
+    return {
+        "score": score,
+        "triggers_used": sorted(triggers_used),
+        "triggers_missing": triggers_missing,
+        "hook_structures_used": sorted(hook_structures_used),
+        "hook_structures_missing": hook_structures_missing,
+        "interpretation": interpretation,
+    }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
