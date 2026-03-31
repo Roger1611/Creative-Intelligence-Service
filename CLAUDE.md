@@ -16,9 +16,10 @@ Python 3.11+, SQLite, Playwright (scraping), httpx, OpenRouter API via openai SD
 
 ```
 scrapers/         → Meta Ad Library + Instagram + brand site scrapers (Playwright)
-analysis/         → Data structuring, profitability filtering, fatigue scoring, category intel
+analysis/         → Data structuring, profitability filtering, fatigue scoring, category intel,
+                    brand intel, competitor deep dive, impact estimation, shared utils
 llm/              → API client, prompt chains, prompt templates (in llm/prompts/)
-deliverables/     → PDF audit generator, sprint deliverable generator
+deliverables/     → PDF audit generator, sprint deliverable generator, shared PDF utils
 feedback/         → Performance data parsing + feedback loop for concept improvement
 db/               → SQLite schema
 data/             → raw/ (scraped), processed/ (structured JSON), performance/ (client CSVs)
@@ -47,15 +48,17 @@ config.py         → Central config, loads .env, initializes DB on first run
 | analysis/competitor_deep_dive.py | ✅ Done | Per-competitor profiles, top-5 winner dissections, why_it_works explanations, creative velocity, competitive landscape summary; CLI --brand --competitors |
 | analysis/impact_estimator.py | ✅ Done | ₹ impact per gap: fatigue waste, angle/format gap opportunity cost, refresh cycle waste, sprint ROI; CLI --brand --competitors --daily-spend |
 | analysis/category_intel.py | ✅ Done | Trigger win rates; format over-performance; underused angles; patterns + opportunities |
+| analysis/utils.py | ✅ Done | classify_hook_structure, shared analysis helpers |
+| deliverables/utils.py | ✅ Done | format_inr, format_inr_short, severity_color, confidence_badge_text, load_json |
 | llm/client.py | ✅ Done | OpenRouter via openai SDK; task→model routing (MODEL_MAP); multimodal vision; retries + fallback; cost logging |
-| llm/prompts/*.txt | ✅ Done | competitor_deconstruction, waste_diagnosis, concept_generation |
+| llm/prompts/*.txt | ✅ Done | competitor_deconstruction, waste_diagnosis, concept_generation (V2: production-ready creative brief format) |
 | llm/chains.py | ✅ Done | chain_competitor_analysis, chain_waste_diagnosis, chain_concept_generation, chain_full; DB + JSON output |
-| deliverables/audit_generator.py | ✅ Done | V2: 9-page intelligence-grade audit with 5-layer data; CLI --brand --output |
+| deliverables/audit_generator.py | ✅ Done | V3: 9-page intelligence-grade audit with ₹ impact; CLI --brand --output |
 | deliverables/sprint_generator.py | ✅ Done | Full sprint PDF+JSON: exec summary, competitor intel, 50+ concepts by angle, creative calendar; CLI --brand --batch --output |
 | feedback/performance_parser.py | ✅ Done | Meta CSV parser; 3-strategy ad matching; fuzzy concept linking; CLI --file --brand |
 | feedback/loop.py | ✅ Done | Angle/hook/format analysis; winning patterns text; ROAS-weighted next-batch weights; CLI --category/--brand |
 | pipeline.py | ✅ Done | audit (14 steps), sprint (16 steps), batch-audit, refresh (11 steps) modes; brand_intel + competitor_deep_dive + impact_estimator integrated; --dry-run; tqdm progress; RunTracker summary |
-| tests/ | ✅ Done | 230 tests: structurer, fatigue scorer, profitability, prompts, entity diversity, audit PDF generation, gap analysis, brand intel, competitor deep dive, impact estimator |
+| tests/ | ✅ Done | 308 tests: structurer, fatigue scorer, profitability, prompts, entity diversity, audit PDF generation, gap analysis, brand intel, competitor deep dive, impact estimator, deliverables utils |
 
 ## Commands
 
@@ -203,16 +206,16 @@ Upgraded from 3-page PDF to 9-page intelligence-grade audit. Every number comes 
 - category_intel.run() → writes `hook_database`, `visual_pattern_stats` to `{brand}_category_intelligence.json`
 - audit_generator._gather_data() → loads both JSON files + DB data → passes to all page functions
 
-### PDF structure (9 pages)
-1. Executive Diagnosis — dynamic verdict, 4 metric cards, format mix
-2. Ad Account Health — coverage ratio, fatigue index, format distribution gap, hook diversity checklist
-3. Competitor Winning Model — trigger distribution, format performance, key patterns
-4. Hook Intelligence — real hooks from profitable ads by psychological angle
-5. Visual Pattern Analysis — what winning ads look like (face/text/UGC percentages)
-6. Gap Analysis — angle, format, and hook structure gaps with callout boxes
-7. Creative Strategy Blueprint — creative matrix, 14-day calendar, metric targets
-8. Data-Backed Concepts — sample hooks with "Why This Works" justification
-9. Priority Action Plan — actions from waste report + gaps, "What This Audit Didn't Cover"
+### PDF structure (9 pages) — V3
+1. Executive Diagnosis — ₹ waste figure, 4 metric cards, format mix
+2. Competitive Landscape — per-competitor breakdown, ranking
+3. Competitor War Room — top winner ad dissections with full hooks
+4. Hook Swipe File — real hooks by angle, full text, hook structure
+5. Creative Gaps with ₹ Impact — gaps sorted by estimated cost
+6. Visual Pattern Intelligence — patterns + actionable checklist
+7. Creative Strategy Blueprint — product-specific matrix, calendar
+8. Sample Creative Briefs — expanded production-ready format
+9. Priority Action Plan + ROI — actions, ₹ savings, payback period
 
 ### Concept generation data-linking
 - `chain_concept_generation()` now passes `hook_database`, `gap_analysis`, `winning_patterns`, `visual_patterns` to prompt
@@ -252,3 +255,30 @@ Rewrote concept_generation prompt and chain to produce designer-executable creat
 - `impact_estimator.run()` called after waste diagnosis LLM, before concept generation
 - Audit: 14 steps (was 11). Sprint: 16 steps (was 13). Refresh: 11 steps (was 8).
 - All three modes import from `analysis.brand_intel`, `analysis.competitor_deep_dive`, `analysis.impact_estimator`
+
+## Audit V3 (2026-03-30)
+
+Rewrote audit PDF from V2 layout to intelligence-grade 9-page report with ₹ impact figures, competitor war room, and production-ready briefs. Every page now sources data from brand_intel, competitor_deep_dive, and impact_estimator outputs.
+
+### Key changes from V2
+- **Page 1 (Executive Diagnosis)**: Now shows ₹ total monthly waste figure from impact_estimator, not just fatigue score
+- **Page 2 (Competitive Landscape)**: Replaced "Ad Account Health" with per-competitor breakdown table — ad count, profitable %, format mix, dominant trigger, creative velocity
+- **Page 3 (Competitor War Room)**: New page — top winner ad dissections per competitor with full hook text, why_it_works explanation, duration, trigger
+- **Page 4 (Hook Swipe File)**: Expanded from summary to full hook text grouped by psychological angle with hook_structure classification
+- **Page 5 (Creative Gaps with ₹ Impact)**: Gaps now sorted by estimated_monthly_impact_inr from impact_estimator; each gap shows ₹ cost
+- **Page 6 (Visual Pattern Intelligence)**: Added actionable checklist derived from visual_pattern_stats
+- **Page 7 (Creative Strategy Blueprint)**: Product-specific matrix using brand_intel products; calendar references actual gap priorities
+- **Page 8 (Sample Creative Briefs)**: Production-ready format with visual_direction object, hook_text_hindi, text_overlay, sound_design
+- **Page 9 (Priority Action Plan + ROI)**: Added ₹ savings projections and payback period from impact_estimator sprint_roi
+
+### New shared utilities
+- **deliverables/utils.py**: Extracted `format_inr()`, `format_inr_short()`, `severity_color()`, `confidence_badge_text()`, `load_json()` from audit_generator for reuse across deliverables
+- **analysis/utils.py**: Extracted `classify_hook_structure()` for reuse across category_intel and audit_generator
+
+### Data sources per page
+- Pages 1, 5, 9: `{slug}_impact_estimate.json` (impact_estimator output)
+- Pages 2, 3: `{slug}_competitor_deep_dive.json` (competitor_deep_dive output)
+- Pages 4, 6: `{slug}_category_intelligence.json` (category_intel output)
+- Page 7: `{slug}_brand_intel.json` (brand_intel output)
+- Page 8: `creative_concepts` table (chain_concept_generation output)
+- All pages: `{slug}_fatigue.json`, DB queries for ad counts/durations

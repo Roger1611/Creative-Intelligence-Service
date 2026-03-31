@@ -117,12 +117,16 @@ def run(brand_name: str) -> dict:
     brand_row = _fetch_brand(brand_name)
     if not brand_row:
         raise ValueError(
-            f"Brand '{brand_name}' not found in DB. Run ingest first."
+            f"Brand '{brand_name}' not found in DB. "
+            f"Run the scraper/ingest step first to add this brand."
         )
 
     brand_id = brand_row["id"]
     ads = _fetch_ads(brand_id)
-    ad_copies = [a["ad_copy"] for a in ads if a.get("ad_copy")]
+    ad_copies = [
+        a["ad_copy"] for a in ads
+        if a.get("ad_copy") and isinstance(a["ad_copy"], str) and a["ad_copy"].strip()
+    ]
 
     logger.info(
         "Building brand intel for '%s': %d ads, %d with ad_copy",

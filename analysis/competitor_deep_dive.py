@@ -49,6 +49,11 @@ def run(brand_name: str, competitor_names: list[str]) -> dict:
     for comp_name in competitor_names:
         profile = _build_competitor_profile(comp_name, category_intel)
         per_competitor[comp_name] = profile
+        if profile["active_ads"] == 0:
+            logger.info(
+                "Competitor '%s' has 0 active ads — skipping detailed analysis",
+                comp_name,
+            )
 
     landscape = _build_landscape_summary(per_competitor)
 
@@ -148,8 +153,8 @@ def _build_winner_detail(
     ad_copy = ad.get("ad_copy") or ""
     hook_text = ad_copy.split("\n")[0].strip()[:200] if ad_copy else ""
 
-    trigger = (analysis or {}).get("psychological_trigger")
-    hook_structure = (analysis or {}).get("hook_structure")
+    trigger = (analysis or {}).get("psychological_trigger") or "unknown"
+    hook_structure = (analysis or {}).get("hook_structure") or "unknown"
     copy_tone = (analysis or {}).get("copy_tone")
     visual_layout = (analysis or {}).get("visual_layout")
 

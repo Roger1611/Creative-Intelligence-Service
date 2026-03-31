@@ -276,8 +276,8 @@ def _build_pdf(data: dict, out_path: Path) -> None:
 def _page_executive_diagnosis(data: dict) -> list:
     brand        = data["brand"]
     ads          = data["client_ads"]
-    fatigue_data = data.get("fatigue_analysis", {})
-    impact_data  = data.get("impact_estimate", {})
+    fatigue_data = data.get("fatigue_analysis") or {}
+    impact_data  = data.get("impact_estimate") or {}
     story        = []
 
     # Top accent bar
@@ -361,6 +361,12 @@ def _get_total_monthly_waste(impact_data: dict) -> float:
     total = impact_data.get("total_estimated_monthly_waste", 0)
     if total:
         return float(total)
+    # Try nested waste_breakdown (actual impact_estimator output format)
+    wb = impact_data.get("waste_breakdown", {})
+    if wb:
+        total = wb.get("total_estimated_monthly_waste", 0)
+        if total:
+            return float(total)
     # Sum per_gap_impact entries
     per_gap = impact_data.get("per_gap_impact", [])
     if per_gap:
@@ -423,10 +429,10 @@ def _build_executive_verdict(fatigue_data: dict, ads: list[dict],
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _page_competitive_landscape(data: dict) -> list:
-    deep_dive   = data.get("competitor_deep_dive", {})
+    deep_dive   = data.get("competitor_deep_dive") or {}
     brand       = data["brand"]
     ads         = data["client_ads"]
-    competitors = data.get("competitors", [])
+    competitors = data.get("competitors") or []
     story       = []
 
     # Top accent bar
@@ -544,7 +550,7 @@ def _page_competitive_landscape(data: dict) -> list:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _page_competitor_war_room(data: dict) -> list:
-    deep_dive = data.get("competitor_deep_dive", {})
+    deep_dive = data.get("competitor_deep_dive") or {}
     story     = []
 
     # Top accent bar
@@ -616,7 +622,7 @@ def _page_competitor_war_room(data: dict) -> list:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _page_hook_swipe_file(data: dict) -> list:
-    intel_data = data.get("category_intel", {})
+    intel_data = data.get("category_intel") or {}
     story      = []
 
     # Top accent bar
@@ -705,9 +711,9 @@ def _page_hook_swipe_file(data: dict) -> list:
 
 def _build_gaps(data: dict) -> list[dict]:
     """Build a unified list of creative gaps from 3 sources."""
-    intel_data   = data.get("category_intel", {})
-    fatigue_data = data.get("fatigue_analysis", {})
-    impact_data  = data.get("impact_estimate", {})
+    intel_data   = data.get("category_intel") or {}
+    fatigue_data = data.get("fatigue_analysis") or {}
+    impact_data  = data.get("impact_estimate") or {}
     brand        = data["brand"]
     ads          = data["client_ads"]
     gaps: list[dict] = []
@@ -848,6 +854,12 @@ def _page_gap_analysis(data: dict) -> list:
             S_BODY))
         return story
 
+    has_impact_data = bool(data.get("impact_estimate"))
+    if not has_impact_data:
+        story.append(Paragraph(
+            "<i>Run full pipeline for spend analysis — \u20b9 impact figures "
+            "require the impact estimator step.</i>", S_SECTION_NOTE))
+
     for gap in gaps[:6]:
         # Build structured callout content
         parts = [
@@ -921,7 +933,7 @@ _PATTERN_ACTIONS = {
 
 
 def _page_visual_patterns(data: dict) -> list:
-    intel_data = data.get("category_intel", {})
+    intel_data = data.get("category_intel") or {}
     story      = []
 
     # Top accent bar
@@ -1002,9 +1014,9 @@ _BOF_TRIGGERS  = {"urgency", "status"}
 
 
 def _page_creative_strategy(data: dict) -> list:
-    intel_data   = data.get("category_intel", {})
-    fatigue_data = data.get("fatigue_analysis", {})
-    brand_intel  = data.get("brand_intel", {})
+    intel_data   = data.get("category_intel") or {}
+    fatigue_data = data.get("fatigue_analysis") or {}
+    brand_intel  = data.get("brand_intel") or {}
     brand        = data["brand"]
     story        = []
 
@@ -1330,8 +1342,8 @@ _PRIORITY_COLORS = {
 
 
 def _page_action_plan(data: dict) -> list:
-    waste_report = data.get("waste_report", {})
-    impact_data  = data.get("impact_estimate", {})
+    waste_report = data.get("waste_report") or {}
+    impact_data  = data.get("impact_estimate") or {}
     story        = []
 
     # Top accent bar
@@ -1396,6 +1408,14 @@ def _page_action_plan(data: dict) -> list:
     story.append(Spacer(1, 6 * mm))
 
     # ── Section B: ROI Projection ─────────────────────────────────────────
+    if not impact_data:
+        story.append(Paragraph("B. ROI Projection", S_H3))
+        story.append(Paragraph(
+            "<i>Run full pipeline for spend analysis \u2014 "
+            "ROI projections require the impact estimator step.</i>",
+            S_SECTION_NOTE))
+        story.append(Spacer(1, 6 * mm))
+
     if impact_data:
         story.append(Paragraph("B. ROI Projection", S_H3))
 
@@ -1433,9 +1453,8 @@ def _page_action_plan(data: dict) -> list:
         story.append(Spacer(1, 6 * mm))
 
     # ── Section C: What This Audit Didn't Cover ──────────────────────────
-    section_label = "C" if impact_data else "B"
     story.append(Paragraph(
-        f"{section_label}. What This Audit Didn't Cover", S_H3))
+        "C. What This Audit Didn't Cover", S_H3))
 
     not_covered = [
         "50+ production-ready creative briefs with visual direction, "

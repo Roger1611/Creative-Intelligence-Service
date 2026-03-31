@@ -57,6 +57,11 @@ def run(
     daily_spend_inr : float or None
         Total daily ad spend in ₹.  If None, estimated from active ad count.
     """
+    if daily_spend_inr is not None and daily_spend_inr <= 0:
+        raise ValueError(
+            f"daily_spend_inr must be positive, got {daily_spend_inr}"
+        )
+
     brand_row = _fetch_brand(brand_name)
     if not brand_row:
         raise ValueError(f"Brand '{brand_name}' not found in DB.")
