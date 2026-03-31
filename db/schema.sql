@@ -93,6 +93,8 @@ CREATE TABLE IF NOT EXISTS creative_concepts (
     trust_stack_json         TEXT,
     format_spec              TEXT,
     thumb_stop_score         INTEGER CHECK(thumb_stop_score BETWEEN 1 AND 10),
+    visual_direction_json    TEXT,
+    brief_json               TEXT,
     generated_at             TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

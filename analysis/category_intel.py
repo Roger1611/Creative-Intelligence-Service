@@ -21,6 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from analysis.utils import classify_hook_structure
 from config import PROC_DIR, PROFITABLE_AD_MIN_DAYS, PSYCHOLOGICAL_TRIGGERS, get_connection
 
 logger = logging.getLogger(__name__)
@@ -457,6 +458,19 @@ def _derive_opportunities(trigger_analysis: dict, format_analysis: dict) -> list
 # Audit V2: Hook database and visual pattern stats
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _is_valid_hook(text: str) -> bool:
+    """Return False for template variables, too-short text, or URL-only hooks."""
+    if not text:
+        return False
+    if "{{" in text or "}}" in text or "{%" in text or "%}" in text:
+        return False
+    if len(text.strip()) < 5:
+        return False
+    if text.strip().startswith("http"):
+        return False
+    return True
+
+
 def _build_hook_database(
     all_analyses: list[dict],
     all_ads: list[dict],
@@ -492,6 +506,10 @@ def _build_hook_database(
         # Extract hook: first line of ad_copy, capped at 100 chars
         hook_text = ad_copy.split("\n")[0].strip()[:100]
 
+        # Validate hook_text
+        if not _is_valid_hook(hook_text):
+            continue
+
         # Spoken hook from transcript
         spoken_hook = None
         transcript = ad.get("transcript")
@@ -504,12 +522,15 @@ def _build_hook_database(
                     first_sentence = first_sentence[: idx + 1]
                     break
             spoken_hook = first_sentence[:100]
+            if not _is_valid_hook(spoken_hook):
+                spoken_hook = None
 
         brand_name = brand_id_to_name.get(ad.get("brand_id"), "Unknown")
 
         trigger_hooks[trigger].append({
             "text": hook_text,
             "spoken_hook": spoken_hook,
+            "hook_structure": classify_hook_structure(hook_text),
             "source_brand": brand_name,
             "duration_days": ad.get("duration_days") or 0,
             "ad_library_id": ad.get("ad_library_id", ""),
@@ -523,7 +544,7 @@ def _build_hook_database(
         result[trigger] = {
             "count": count,
             "pct_of_winners": round(count / total_profitable * 100, 1),
-            "hooks": hooks[:5],
+            "hooks": hooks[:8],
         }
 
     return result

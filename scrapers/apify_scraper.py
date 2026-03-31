@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
@@ -340,6 +341,27 @@ def _download_thumbnail(url: str, ad_library_id: str, brand_slug: str) -> Option
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Ad copy cleaning
+# ══════════════════════════════════════════════════════════════════════════════
+
+_TEMPLATE_VAR_RE = re.compile(r"\{\{.*?\}\}")
+_JINJA_BLOCK_RE = re.compile(r"\{%.*?%\}")
+_MULTI_NEWLINE_RE = re.compile(r"\n{3,}")
+
+
+def _clean_ad_copy(text: str) -> Optional[str]:
+    """Strip template variables and Jinja blocks from ad copy.
+
+    Returns None if the cleaned text is empty or only whitespace.
+    """
+    cleaned = _TEMPLATE_VAR_RE.sub("", text)
+    cleaned = _JINJA_BLOCK_RE.sub("", cleaned)
+    cleaned = cleaned.strip()
+    cleaned = _MULTI_NEWLINE_RE.sub("\n\n", cleaned)
+    return cleaned if cleaned.strip() else None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Item → ad dict mapping
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -359,10 +381,11 @@ def _map_item(item: dict) -> dict:
             or item.get("id")
             or item.get("ad_archive_id")
         ),
-        "ad_copy": (
+        "ad_copy": _clean_ad_copy(
             (snapshot.get("body") or {}).get("text")
             or snapshot.get("caption")
             or snapshot.get("message")
+            or ""
         ),
         "cta_type": (
             snapshot.get("ctaText")

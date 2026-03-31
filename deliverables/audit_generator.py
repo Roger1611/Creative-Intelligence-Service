@@ -1,18 +1,18 @@
 """
-deliverables/audit_generator.py — Generate the 8-10 page Creative Intelligence Audit PDF.
+deliverables/audit_generator.py — Generate the 9-page Creative Intelligence Audit PDF.
 
 A comprehensive, intelligence-grade audit that makes founders uncomfortable
 about their creative spend. Every number comes from real data.
 
-PAGE 1: Executive Diagnosis (verdict + 4 metric cards)
-PAGE 2: Ad Account Health Metrics (coverage, fatigue, format gaps, hook diversity)
-PAGE 3: Competitor Winning Model (trigger + format + patterns)
-PAGE 4: Hook Intelligence (real hooks from profitable competitor ads)
-PAGE 5: Visual Pattern Analysis (what winning ads look like)
-PAGE 6: Gap Analysis (angle, format, hook structure gaps)
-PAGE 7: Creative Strategy Blueprint (matrix, calendar, targets)
-PAGE 8: Data-Backed Concepts (sample hooks with "why this works")
-PAGE 9: Priority Action Plan + CTA
+PAGE 1: Executive Diagnosis (verdict + 4 metric cards incl. ₹ waste)
+PAGE 2: Competitive Landscape Overview (competitor rankings + conditional formatting)
+PAGE 3: Competitor War Room — Winner Dissections (top 3 per competitor)
+PAGE 4: Hook Swipe File (full hooks grouped by trigger, with hook_structure)
+PAGE 5: Your Creative Gaps — With ₹ Impact (gaps sorted by estimated impact)
+PAGE 6: Visual Pattern Intelligence (patterns + actionable checklist)
+PAGE 7: Creative Strategy Blueprint (product-specific matrix + calendar)
+PAGE 8: Sample Creative Briefs (5 expanded briefs with visual direction)
+PAGE 9: Priority Action Plan + ROI (actions + payback calculation)
 
 ReportLab note: coordinates are bottom-left origin (y=0 = bottom of page).
 
@@ -53,6 +53,13 @@ from config import (
     RAW_DIR,
     get_connection,
 )
+from deliverables.utils import (
+    format_inr as _format_inr,
+    format_inr_short as _format_inr_short,
+    load_json as _load_json,
+    severity_color as _severity_color,
+    confidence_badge_text as _confidence_badge_text,
+)
 from scrapers.utils import safe_brand_slug
 
 logger = logging.getLogger(__name__)
@@ -68,6 +75,8 @@ _RED    = colors.HexColor("#E53935")
 _GREEN  = colors.HexColor("#43A047")
 _LIGHT_TEAL = colors.HexColor("#E0F7FA")
 _LIGHT_RED  = colors.HexColor("#FFEBEE")
+_LIGHT_GREEN = colors.HexColor("#E8F5E9")
+_LIGHT_ORANGE = colors.HexColor("#FFF3E0")
 
 PAGE_W, PAGE_H = A4
 _MARGIN = 18 * mm
@@ -196,29 +205,12 @@ def _gather_data(brand_name: str) -> dict:
     # Load pre-computed analysis from processed JSON files
     slug = brand_name.lower().replace(" ", "_")
 
-    fatigue_path = PROC_DIR / f"{slug}_fatigue.json"
-    fatigue_data = {}
-    if fatigue_path.exists():
-        try:
-            fatigue_data = json.loads(fatigue_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            logger.warning("Could not load fatigue data from %s", fatigue_path)
-
-    intel_path = PROC_DIR / f"{slug}_category_intelligence.json"
-    intel_data = {}
-    if intel_path.exists():
-        try:
-            intel_data = json.loads(intel_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            logger.warning("Could not load category intel from %s", intel_path)
-
-    profit_path = PROC_DIR / f"{slug}_profitable_ads_summary.json"
-    profit_data = {}
-    if profit_path.exists():
-        try:
-            profit_data = json.loads(profit_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            logger.warning("Could not load profitability data from %s", profit_path)
+    fatigue_data = _load_json(PROC_DIR / f"{slug}_fatigue.json", "fatigue")
+    intel_data = _load_json(PROC_DIR / f"{slug}_category_intelligence.json", "category intel")
+    profit_data = _load_json(PROC_DIR / f"{slug}_profitable_ads_summary.json", "profitability")
+    brand_intel = _load_json(PROC_DIR / f"{slug}_brand_intel.json", "brand intel")
+    competitor_deep_dive = _load_json(PROC_DIR / f"{slug}_competitor_deep_dive.json", "competitor deep dive")
+    impact_estimate = _load_json(PROC_DIR / f"{slug}_impact_estimate.json", "impact estimate")
 
     return {
         "brand": brand,
@@ -229,6 +221,9 @@ def _gather_data(brand_name: str) -> dict:
         "fatigue_analysis": fatigue_data,
         "category_intel": intel_data,
         "profitability_summary": profit_data,
+        "brand_intel": brand_intel,
+        "competitor_deep_dive": competitor_deep_dive,
+        "impact_estimate": impact_estimate,
     }
 
 
@@ -236,11 +231,15 @@ def _gather_data(brand_name: str) -> dict:
 
 def _build_pdf(data: dict, out_path: Path) -> None:
     logger.info(
-        "Audit data sources: fatigue_analysis=%s, category_intel=%s, "
-        "profitability=%s, concepts=%d, competitors=%d",
+        "Audit data sources: fatigue=%s, category_intel=%s, profitability=%s, "
+        "brand_intel=%s, competitor_deep_dive=%s, impact_estimate=%s, "
+        "concepts=%d, competitors=%d",
         "present" if data.get("fatigue_analysis") else "missing",
         "present" if data.get("category_intel") else "missing",
         "present" if data.get("profitability_summary") else "missing",
+        "present" if data.get("brand_intel") else "missing",
+        "present" if data.get("competitor_deep_dive") else "missing",
+        "present" if data.get("impact_estimate") else "missing",
         len(data.get("sample_concepts", [])),
         len(data.get("competitors", [])),
     )
@@ -252,19 +251,19 @@ def _build_pdf(data: dict, out_path: Path) -> None:
     story = []
     story += _page_executive_diagnosis(data)
     story.append(PageBreak())
-    story += _page_account_health(data)
+    story += _page_competitive_landscape(data)
     story.append(PageBreak())
-    story += _page_competitor_winning_model(data)
+    story += _page_competitor_war_room(data)
     story.append(PageBreak())
-    story += _page_hook_intelligence(data)
-    story.append(PageBreak())
-    story += _page_visual_patterns(data)
+    story += _page_hook_swipe_file(data)
     story.append(PageBreak())
     story += _page_gap_analysis(data)
     story.append(PageBreak())
+    story += _page_visual_patterns(data)
+    story.append(PageBreak())
     story += _page_creative_strategy(data)
     story.append(PageBreak())
-    story += _page_concepts(data)
+    story += _page_sample_briefs(data)
     story.append(PageBreak())
     story += _page_action_plan(data)
     doc.build(story)
@@ -278,6 +277,7 @@ def _page_executive_diagnosis(data: dict) -> list:
     brand        = data["brand"]
     ads          = data["client_ads"]
     fatigue_data = data.get("fatigue_analysis", {})
+    impact_data  = data.get("impact_estimate", {})
     story        = []
 
     # Top accent bar
@@ -294,15 +294,18 @@ def _page_executive_diagnosis(data: dict) -> list:
     story.append(HRFlowable(width="100%", thickness=1, color=_LIGHT))
     story.append(Spacer(1, 6 * mm))
 
-    # Verdict box
-    verdict = _build_executive_verdict(fatigue_data, ads)
+    # Verdict box — now includes ₹ waste figure
+    total_waste = _get_total_monthly_waste(impact_data)
+    verdict = _build_executive_verdict(fatigue_data, ads, total_waste)
     story.append(_verdict_box(verdict))
     story.append(Spacer(1, 6 * mm))
 
-    # Four metric cards
+    # Four metric cards: Monthly Waste, Coverage Ratio, Fatigue Severity, Angle Diversity
     coverage = fatigue_data.get("creative_coverage", {})
     fi       = fatigue_data.get("fatigue_index", {})
     hd       = fatigue_data.get("hook_diversity", {})
+
+    waste_str = _format_inr(total_waste) if total_waste else "\u2014"
 
     coverage_ratio = coverage.get("ratio")
     coverage_str = f"{coverage_ratio * 100:.0f}%" if coverage_ratio is not None else "\u2014"
@@ -313,21 +316,17 @@ def _page_executive_diagnosis(data: dict) -> list:
     hd_score = hd.get("score")
     hd_str = f"{hd_score:.0f}/100" if hd_score is not None else "\u2014"
 
-    active_ads = [a for a in ads if a.get("is_active")]
-    fatigued = [a for a in active_ads
-                if (a.get("duration_days") or 0) >= FATIGUE_AD_MIN_DAYS]
-    fatigued_str = str(len(fatigued))
-
     metric_cards = _metric_row([
+        (waste_str, "Monthly Creative Waste"),
         (coverage_str, "Coverage Ratio"),
         (severity_str, "Fatigue Severity"),
         (hd_str, "Angle Diversity"),
-        (fatigued_str, "Fatigued Ads"),
     ])
     story.append(metric_cards)
     story.append(Spacer(1, 4 * mm))
 
     # Format mix summary
+    active_ads = [a for a in ads if a.get("is_active")]
     fmt_counts = Counter(a.get("creative_type", "unknown") for a in active_ads)
     fmt_str = " / ".join(f"{v} {k}" for k, v in fmt_counts.most_common())
 
@@ -354,7 +353,23 @@ def _page_executive_diagnosis(data: dict) -> list:
     return story
 
 
-def _build_executive_verdict(fatigue_data: dict, ads: list[dict]) -> str:
+def _get_total_monthly_waste(impact_data: dict) -> float:
+    """Extract total estimated monthly waste from impact estimate data."""
+    if not impact_data:
+        return 0.0
+    # Try direct field first
+    total = impact_data.get("total_estimated_monthly_waste", 0)
+    if total:
+        return float(total)
+    # Sum per_gap_impact entries
+    per_gap = impact_data.get("per_gap_impact", [])
+    if per_gap:
+        return sum(float(g.get("estimated_monthly_impact_inr", 0)) for g in per_gap)
+    return 0.0
+
+
+def _build_executive_verdict(fatigue_data: dict, ads: list[dict],
+                             total_waste: float = 0.0) -> str:
     """Build the verdict string dynamically from real data."""
     if not fatigue_data:
         return ("Run the full pipeline with competitor data to generate "
@@ -362,12 +377,18 @@ def _build_executive_verdict(fatigue_data: dict, ads: list[dict]) -> str:
 
     parts = []
 
+    # Lead with money if available
+    if total_waste > 0:
+        parts.append(
+            f"Your ad account is losing an estimated "
+            f"{_format_inr(total_waste)}/month in creative waste")
+
     coverage = fatigue_data.get("creative_coverage", {})
     if coverage.get("ratio", 1) < 1:
         ratio_val = coverage.get("ratio", 1)
         deficit_pct = 100 - ratio_val * 100
         parts.append(
-            f"With {coverage.get('client_count', '?')} active ads against "
+            f"with {coverage.get('client_count', '?')} active ads against "
             f"a benchmark of {coverage.get('benchmark', '?')}, you are "
             f"underfeeding Meta's algorithm by {deficit_pct:.0f}%")
 
@@ -398,334 +419,203 @@ def _build_executive_verdict(fatigue_data: dict, ads: list[dict]) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PAGE 2 — Ad Account Health Metrics
+# PAGE 2 — Competitive Landscape Overview
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _page_account_health(data: dict) -> list:
-    fatigue_data = data.get("fatigue_analysis", {})
-    intel_data   = data.get("category_intel", {})
-    ads          = data["client_ads"]
-    story        = []
-
-    # Top accent bar
-    story.append(HRFlowable(width="100%", thickness=4, color=_TEAL))
-    story.append(Spacer(1, 4 * mm))
-    story.append(Paragraph("Ad Account Health Metrics", S_H2))
-    story.append(Spacer(1, 3 * mm))
-
-    # ── Section A: Creative Coverage Ratio ───────────────────────────────
-    story.append(Paragraph("A. Creative Coverage Ratio", S_H3))
-
-    coverage = fatigue_data.get("creative_coverage", {})
-    if coverage:
-        cov_rows = [
-            ["Metric", "Value"],
-            ["Your Active Ads", str(coverage.get("client_count", "\u2014"))],
-            ["Category Benchmark", str(coverage.get("benchmark", "\u2014"))],
-        ]
-        story.append(_data_table(cov_rows, col_widths=[_CONTENT_W * 0.5, _CONTENT_W * 0.5]))
-        story.append(Spacer(1, 2 * mm))
-
-        interp = coverage.get("interpretation", "")
-        if interp:
-            story.append(Paragraph(interp, S_BODY))
-
-        if coverage.get("ratio", 1) < 0.5:
-            story.append(_critical_callout(
-                "CRITICAL: Your creative volume is less than half "
-                "the category minimum."))
-    else:
-        story.append(Paragraph(
-            "<i>Creative coverage data not available. Run the fatigue "
-            "scorer to populate.</i>", S_SECTION_NOTE))
-
-    story.append(Spacer(1, 4 * mm))
-
-    # ── Section B: Creative Fatigue Index ────────────────────────────────
-    story.append(Paragraph("B. Creative Fatigue Index", S_H3))
-
-    fi = fatigue_data.get("fatigue_index", {})
-    if fi:
-        fi_rows = [
-            ["Metric", "Value"],
-            ["Average Ad Duration", f"{fi.get('avg_duration', 0):.0f} days"],
-            ["Optimal Refresh Window", f"{fi.get('benchmark', 0)} days"],
-            ["Fatigue Index", f"{fi.get('index', 0):.1f}x"],
-            ["Severity", fi.get("severity", "\u2014")],
-        ]
-        story.append(_data_table(fi_rows, col_widths=[_CONTENT_W * 0.5, _CONTENT_W * 0.5]))
-        story.append(Spacer(1, 2 * mm))
-
-        # List critical (fatigued) ads
-        critical_ads = fatigue_data.get("critical_ads", [])
-        if critical_ads:
-            story.append(Paragraph(
-                f"<b>Fatigued ads ({FATIGUE_AD_MIN_DAYS}+ days):</b>", S_BODY))
-            fat_header = ["Ad ID", "Days Running", "Format"]
-            fat_rows = [fat_header]
-            for ad in critical_ads[:5]:
-                fat_rows.append([
-                    str(ad.get("ad_library_id", "\u2014")),
-                    str(ad.get("duration_days", "\u2014")),
-                    str(ad.get("creative_type", "\u2014")),
-                ])
-            remaining = len(critical_ads) - 5
-            story.append(_data_table(
-                fat_rows,
-                col_widths=[_CONTENT_W * 0.4, _CONTENT_W * 0.3, _CONTENT_W * 0.3],
-            ))
-            if remaining > 0:
-                story.append(Paragraph(
-                    f"<i>...and {remaining} more</i>", S_SMALL))
-    else:
-        story.append(Paragraph(
-            "<i>Fatigue index data not available. Run the fatigue "
-            "scorer to populate.</i>", S_SECTION_NOTE))
-
-    story.append(Spacer(1, 4 * mm))
-
-    # ── Section C: Format Distribution Gap ───────────────────────────────
-    story.append(Paragraph("C. Format Distribution Gap", S_H3))
-
-    format_analysis = intel_data.get("format_analysis", {})
-    active_ads = [a for a in ads if a.get("is_active")]
-
-    if format_analysis and active_ads:
-        # Compute client format percentages
-        total_client = len(active_ads) or 1
-        client_fmt = Counter(a.get("creative_type", "unknown") for a in active_ads)
-
-        fmt_header = ["Format", "Your %", "Competitor Avg %"]
-        fmt_rows = [fmt_header]
-
-        all_formats = set(client_fmt.keys()) | set(format_analysis.keys())
-        # Exclude 'unknown'
-        all_formats.discard("unknown")
-
-        highlight_rows = []
-        row_idx = 1
-        for fmt in sorted(all_formats):
-            client_pct = round(client_fmt.get(fmt, 0) / total_client * 100, 1)
-            comp_data = format_analysis.get(fmt, {})
-            comp_pct = comp_data.get("total_pct", 0)
-            fmt_rows.append([
-                fmt.title(),
-                f"{client_pct:.0f}%",
-                f"{comp_pct:.0f}%",
-            ])
-            # Flag: client has 0% but competitors have >10%
-            if client_pct == 0 and comp_pct > 10:
-                highlight_rows.append(row_idx)
-            row_idx += 1
-
-        col_ws = [_CONTENT_W * 0.34, _CONTENT_W * 0.33, _CONTENT_W * 0.33]
-        tbl = _data_table(fmt_rows, col_widths=col_ws, highlight_rows=highlight_rows)
-        story.append(tbl)
-    elif not format_analysis:
-        story.append(Paragraph(
-            "<i>Competitor format data not available. Run the full "
-            "pipeline with competitor URLs to populate.</i>", S_SECTION_NOTE))
-    else:
-        story.append(Paragraph(
-            "<i>No active ads found for format comparison.</i>",
-            S_SECTION_NOTE))
-
-    story.append(Spacer(1, 4 * mm))
-
-    # ── Section D: Hook Diversity Score ──────────────────────────────────
-    story.append(Paragraph("D. Hook Diversity Score", S_H3))
-
-    hd = fatigue_data.get("hook_diversity", {})
-    if hd:
-        triggers_used = set(hd.get("triggers_used", []))
-        triggers_missing = hd.get("triggers_missing", [])
-
-        # Build 2-column checklist of all 10 triggers
-        all_triggers = list(PSYCHOLOGICAL_TRIGGERS)
-        mid = (len(all_triggers) + 1) // 2
-        col1_triggers = all_triggers[:mid]
-        col2_triggers = all_triggers[mid:]
-
-        check_rows = []
-        for i in range(max(len(col1_triggers), len(col2_triggers))):
-            cells = []
-            for col_trigs in (col1_triggers, col2_triggers):
-                if i < len(col_trigs):
-                    t = col_trigs[i]
-                    label = t.replace("_", " ").title()
-                    if t in triggers_used:
-                        cells.append(Paragraph(
-                            f"<font color='{_GREEN.hexval()}'>\u2713</font> {label}",
-                            S_CHECK_G))
-                    else:
-                        cells.append(Paragraph(
-                            f"<font color='{_RED.hexval()}'>\u2717</font> {label}",
-                            S_CHECK_R))
-                else:
-                    cells.append("")
-            check_rows.append(cells)
-
-        check_tbl = Table(check_rows,
-                          colWidths=[_CONTENT_W * 0.5, _CONTENT_W * 0.5])
-        check_tbl.setStyle(TableStyle([
-            ("TOPPADDING",    (0, 0), (-1, -1), 2),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-            ("LEFTPADDING",   (0, 0), (-1, -1), 6),
-            ("VALIGN",        (0, 0), (-1, -1), "TOP"),
-        ]))
-        story.append(check_tbl)
-        story.append(Spacer(1, 2 * mm))
-
-        interp = hd.get("interpretation", "")
-        if interp:
-            story.append(Paragraph(interp, S_BODY))
-    else:
-        story.append(Paragraph(
-            "<i>Hook diversity data not available. Run the fatigue "
-            "scorer to populate.</i>", S_SECTION_NOTE))
-
-    return story
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PAGE 3 — Competitor Winning Model
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _page_competitor_winning_model(data: dict) -> list:
-    intel_data = data.get("category_intel", {})
-    brand      = data["brand"]
-    story      = []
+def _page_competitive_landscape(data: dict) -> list:
+    deep_dive   = data.get("competitor_deep_dive", {})
+    brand       = data["brand"]
+    ads         = data["client_ads"]
+    competitors = data.get("competitors", [])
+    story       = []
 
     # Top accent bar
     story.append(HRFlowable(width="100%", thickness=4, color=_TEAL))
     story.append(Spacer(1, 4 * mm))
 
-    category = brand.get("category", "this category")
-    total_profitable = intel_data.get("profitable_ads_in_universe", 0)
-
-    story.append(Paragraph(
-        f"What's Working in {category.title() if category else 'This Category'} "
-        f"Right Now", S_H2))
-    story.append(Paragraph(
-        f"Based on {total_profitable} profitable ads (running 21+ days)"
-        if total_profitable > 0 else
-        "Based on competitor ad analysis",
-        S_SUBTITLE))
+    story.append(Paragraph("Competitive Landscape Overview", S_H2))
     story.append(Spacer(1, 3 * mm))
 
-    if not intel_data:
+    if not deep_dive and not competitors:
         story.append(Paragraph(
-            "<i>Category intelligence not available. Run the full pipeline "
+            "<i>Competitive landscape data not available. Run the full pipeline "
             "with competitor URLs to populate this section.</i>",
             S_SECTION_NOTE))
         return story
 
-    # ── Section A: Trigger Distribution Among Winners ────────────────────
-    story.append(Paragraph("A. Trigger Distribution Among Winners", S_H3))
+    # Landscape summary
+    landscape_summary = deep_dive.get("competitive_landscape_summary", "")
+    if landscape_summary:
+        story.append(Paragraph(landscape_summary, S_BODY))
+        story.append(Spacer(1, 4 * mm))
 
-    trigger_analysis = intel_data.get("trigger_analysis", {})
-    by_profitable = trigger_analysis.get("by_profitable_only", {})
-    p_rate = trigger_analysis.get("profitable_rate_by_trigger", {})
+    # Build per-competitor table
+    story.append(Paragraph("Competitor Comparison", S_H3))
 
-    if by_profitable:
-        total_p_triggers = sum(by_profitable.values()) or 1
-        trig_header = ["Trigger", "% of Winners", "Win Rate"]
-        trig_rows = [trig_header]
+    active_client_ads = [a for a in ads if a.get("is_active")]
+    client_count = len(active_client_ads)
 
-        for trigger, count in sorted(
-            by_profitable.items(), key=lambda x: x[1], reverse=True
-        ):
-            if count <= 0:
-                continue
-            pct_winners = round(count / total_p_triggers * 100, 1)
-            win_rate = p_rate.get(trigger, 0)
-            trig_rows.append([
-                trigger.replace("_", " ").title(),
-                f"{pct_winners:.0f}%",
-                f"{win_rate:.0f}%",
-            ])
+    # Collect competitor profiles
+    comp_profiles = deep_dive.get("competitor_profiles", [])
+    if not comp_profiles and competitors:
+        # Fallback: build minimal rows from DB data
+        comp_profiles = []
+        for cd in competitors:
+            comp_ads = cd.get("ads", [])
+            active = [a for a in comp_ads if a.get("is_active")]
+            profitable = [a for a in active if (a.get("duration_days") or 0) >= 21]
+            win_rate = round(len(profitable) / len(active) * 100) if active else 0
+            triggers = Counter(a.get("psychological_trigger") for a in active
+                               if a.get("psychological_trigger"))
+            dominant = triggers.most_common(1)[0][0] if triggers else "\u2014"
+            comp_profiles.append({
+                "name": cd["brand"]["name"],
+                "active_ads": len(active),
+                "win_rate": win_rate,
+                "dominant_trigger": dominant.replace("_", " ").title(),
+                "creative_velocity": "\u2014",
+            })
 
-        if len(trig_rows) > 1:
-            story.append(_data_table(
-                trig_rows,
-                col_widths=[_CONTENT_W * 0.4, _CONTENT_W * 0.3, _CONTENT_W * 0.3],
-            ))
-        else:
-            story.append(Paragraph(
-                "<i>No trigger data in profitable ads.</i>", S_SECTION_NOTE))
-    else:
-        story.append(Paragraph(
-            "<i>No profitable trigger data available.</i>", S_SECTION_NOTE))
+    header = ["Brand", "Active Ads", "Win Rate", "Top Trigger", "Velocity"]
+    rows = [header]
 
+    # Client row first
+    client_active = [a for a in ads if a.get("is_active")]
+    client_profitable = [a for a in client_active if (a.get("duration_days") or 0) >= 21]
+    client_wr = round(len(client_profitable) / len(client_active) * 100) if client_active else 0
+    client_triggers = Counter(a.get("psychological_trigger") for a in client_active
+                              if a.get("psychological_trigger"))
+    client_dominant = (client_triggers.most_common(1)[0][0].replace("_", " ").title()
+                       if client_triggers else "\u2014")
+    rows.append([
+        f"{brand['name']} (You)",
+        str(len(client_active)),
+        f"{client_wr}%",
+        client_dominant,
+        "\u2014",
+    ])
+
+    # Competitor rows
+    all_active_counts = [len(client_active)]
+    for cp in comp_profiles:
+        active = cp.get("active_ads", 0)
+        all_active_counts.append(active)
+        wr = cp.get("win_rate", 0)
+        trigger = cp.get("dominant_trigger", "\u2014")
+        if isinstance(trigger, str) and "_" in trigger:
+            trigger = trigger.replace("_", " ").title()
+        velocity = cp.get("creative_velocity", "\u2014")
+        rows.append([
+            str(cp.get("name", "\u2014")),
+            str(active),
+            f"{wr}%" if isinstance(wr, (int, float)) else str(wr),
+            str(trigger),
+            str(velocity),
+        ])
+
+    # Determine highlight rows: client metrics below competitor average
+    highlight_rows = []
+    if len(comp_profiles) > 0:
+        avg_active = sum(cp.get("active_ads", 0) for cp in comp_profiles) / len(comp_profiles)
+        avg_wr = sum(cp.get("win_rate", 0) for cp in comp_profiles) / len(comp_profiles)
+        # Row 1 is the client row
+        if len(client_active) < avg_active or client_wr < avg_wr:
+            highlight_rows.append(1)
+
+    col_ws = [_CONTENT_W * 0.28, _CONTENT_W * 0.16, _CONTENT_W * 0.16,
+              _CONTENT_W * 0.22, _CONTENT_W * 0.18]
+    story.append(_data_table(rows, col_widths=col_ws, highlight_rows=highlight_rows,
+                             highlight_color=_LIGHT_RED))
     story.append(Spacer(1, 4 * mm))
 
-    # ── Section B: Format Performance ────────────────────────────────────
-    story.append(Paragraph("B. Format Performance", S_H3))
-
-    format_analysis = intel_data.get("format_analysis", {})
-    if format_analysis:
-        fmt_header = ["Format", "Total %", "Winner %", "Win Rate"]
-        fmt_rows = [fmt_header]
-        highlight_rows = []
-        row_idx = 1
-
-        for fmt, fdata in sorted(
-            format_analysis.items(),
-            key=lambda x: x[1].get("win_rate", 0),
-            reverse=True,
-        ):
-            if fmt == "unknown":
-                continue
-            total_pct = fdata.get("total_pct", 0)
-            winner_pct = fdata.get("winner_pct", 0)
-            win_rate = fdata.get("win_rate", 0)
-            fmt_rows.append([
-                fmt.title(),
-                f"{total_pct:.0f}%",
-                f"{winner_pct:.0f}%",
-                f"{win_rate:.0f}%",
-            ])
-            # Highlight over-performing formats
-            if winner_pct > total_pct * 1.3 and total_pct > 0:
-                highlight_rows.append(row_idx)
-            row_idx += 1
-
-        if len(fmt_rows) > 1:
-            col_ws = [_CONTENT_W * 0.28, _CONTENT_W * 0.24,
-                      _CONTENT_W * 0.24, _CONTENT_W * 0.24]
-            story.append(_data_table(
-                fmt_rows, col_widths=col_ws,
-                highlight_rows=highlight_rows, highlight_color=_LIGHT_TEAL,
-            ))
-        else:
-            story.append(Paragraph(
-                "<i>No format data available.</i>", S_SECTION_NOTE))
-    else:
-        story.append(Paragraph(
-            "<i>No format analysis available.</i>", S_SECTION_NOTE))
-
-    story.append(Spacer(1, 4 * mm))
-
-    # ── Section C: Key Patterns ──────────────────────────────────────────
-    story.append(Paragraph("C. Key Patterns", S_H3))
-
-    patterns = intel_data.get("patterns", [])
-    if patterns:
-        for i, pattern in enumerate(patterns, 1):
-            story.append(Paragraph(f"{i}. {pattern}", S_INSIGHT))
-    else:
-        story.append(Paragraph(
-            "<i>Run the full pipeline with more competitor data "
-            "to surface patterns.</i>", S_SECTION_NOTE))
+    # Client ranking
+    sorted_counts = sorted(all_active_counts, reverse=True)
+    rank = sorted_counts.index(len(client_active)) + 1
+    total_brands = len(sorted_counts)
+    story.append(Paragraph(
+        f"<b>Your ranking:</b> #{rank} of {total_brands} in creative volume.",
+        S_BODY))
 
     return story
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PAGE 4 — Hook Intelligence
+# PAGE 3 — Competitor War Room — Winner Dissections
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _page_hook_intelligence(data: dict) -> list:
+def _page_competitor_war_room(data: dict) -> list:
+    deep_dive = data.get("competitor_deep_dive", {})
+    story     = []
+
+    # Top accent bar
+    story.append(HRFlowable(width="100%", thickness=4, color=_TEAL))
+    story.append(Spacer(1, 4 * mm))
+
+    story.append(Paragraph("Competitor War Room \u2014 Winner Dissections", S_H2))
+    story.append(Paragraph(
+        "Top-performing competitor ads deconstructed", S_SUBTITLE))
+
+    top_winners = deep_dive.get("top_winners", {})
+
+    if not top_winners:
+        story.append(Paragraph(
+            "<i>Competitor winner data not available. Run the full pipeline "
+            "with competitor URLs to populate this section.</i>",
+            S_SECTION_NOTE))
+        return story
+
+    for comp_name, winners in top_winners.items():
+        if not winners:
+            continue
+        story.append(Paragraph(comp_name, S_H3))
+
+        for i, winner in enumerate(winners[:3], 1):
+            hook_text = winner.get("hook_text", "") or winner.get("hook", "") or "\u2014"
+            # Wrap to ~200 chars
+            if len(hook_text) > 200:
+                hook_text = hook_text[:197] + "..."
+
+            duration = winner.get("duration_days", 0)
+            trigger = winner.get("psychological_trigger", "") or winner.get("trigger", "")
+            hook_structure = winner.get("hook_structure", "")
+            why_works = winner.get("why_it_works", "")
+            visual = winner.get("visual_layout", "") or winner.get("visual_direction", "")
+
+            # Build card HTML
+            parts = [f"<font size='8'><b>WINNER #{i}</b></font><br/>"]
+            parts.append(f"<font size='11'><b>&ldquo;{hook_text}&rdquo;</b></font><br/>")
+
+            badge_parts = []
+            if duration:
+                badge_parts.append(f"Running {duration} days")
+            if trigger:
+                badge_parts.append(trigger.replace("_", " ").title())
+            if hook_structure:
+                badge_parts.append(hook_structure.replace("_", " ").title())
+            if badge_parts:
+                parts.append(f"<font color='{_GREY.hexval()}'>"
+                             f"{' &bull; '.join(badge_parts)}</font><br/>")
+
+            if why_works:
+                parts.append(f"<br/><b>Why it works:</b> {why_works}<br/>")
+            if visual:
+                vis_preview = visual[:150] + ("..." if len(visual) > 150 else "")
+                parts.append(f"<font color='{_GREY.hexval()}'>"
+                             f"<b>Visual:</b> {vis_preview}</font>")
+
+            story.append(_callout_box("".join(parts)))
+            story.append(Spacer(1, 2 * mm))
+
+        story.append(Spacer(1, 3 * mm))
+
+    return story
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE 4 — Hook Swipe File
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _page_hook_swipe_file(data: dict) -> list:
     intel_data = data.get("category_intel", {})
     story      = []
 
@@ -733,9 +623,10 @@ def _page_hook_intelligence(data: dict) -> list:
     story.append(HRFlowable(width="100%", thickness=4, color=_TEAL))
     story.append(Spacer(1, 4 * mm))
 
-    story.append(Paragraph("Top Competitor Hooks by Psychological Angle", S_H2))
+    story.append(Paragraph("Hook Swipe File \u2014 Competitor Hooks by Angle", S_H2))
     story.append(Paragraph(
-        "Extracted from profitable ads (21+ day run filter)", S_SUBTITLE))
+        "Full hooks from profitable ads (21+ day run filter), sorted by duration",
+        S_SUBTITLE))
 
     hook_database = intel_data.get("hook_database", {})
 
@@ -746,35 +637,62 @@ def _page_hook_intelligence(data: dict) -> list:
             "with competitor URLs to populate.</i>", S_SECTION_NOTE))
         return story
 
-    # Sort triggers by hook count descending, show top 5
+    # Sort triggers by hook count descending
     sorted_triggers = sorted(
         hook_database.items(),
         key=lambda x: x[1].get("count", 0),
         reverse=True,
     )
 
-    for trigger, tdata in sorted_triggers[:5]:
+    for trigger, tdata in sorted_triggers[:6]:
         pct_winners = tdata.get("pct_of_winners", 0)
         story.append(Paragraph(
             f"{trigger.replace('_', ' ').title()} "
             f"({pct_winners:.0f}% of winners)", S_H3))
 
         hooks = tdata.get("hooks", [])
+        # Filter: exclude template vars and hooks < 5 chars
+        hooks = [h for h in hooks
+                 if h.get("text") and len(h["text"]) >= 5
+                 and "$" not in h.get("text", "")
+                 and "{{" not in h.get("text", "")]
+
         if hooks:
-            hook_header = ["Hook Text", "Source Brand", "Days Running"]
+            # Sort by duration descending
+            hooks = sorted(hooks, key=lambda h: h.get("duration_days", 0), reverse=True)
+
+            hook_header = ["Hook Text", "Structure", "Source", "Days"]
             hook_rows = [hook_header]
-            for hook in hooks[:4]:
+            for hook in hooks[:5]:
                 text = hook.get("text", "\u2014")
-                # Truncate long hooks for table
-                if len(text) > 60:
-                    text = text[:57] + "..."
-                hook_rows.append([
+                # Full text with wrapping (up to 200 chars)
+                if len(text) > 200:
+                    text = text[:197] + "..."
+
+                hs = hook.get("hook_structure", "\u2014")
+                if isinstance(hs, str) and "_" in hs:
+                    hs = hs.replace("_", " ").title()
+
+                row = [
                     text,
+                    str(hs),
                     str(hook.get("source_brand", "\u2014")),
                     str(hook.get("duration_days", "\u2014")),
-                ])
+                ]
+                hook_rows.append(row)
 
-            col_ws = [_CONTENT_W * 0.55, _CONTENT_W * 0.25, _CONTENT_W * 0.20]
+                # Add spoken_hook row if available
+                spoken = hook.get("spoken_hook")
+                if spoken and len(spoken) >= 5:
+                    hook_rows.append([
+                        f"[Spoken] {spoken}",
+                        "\u2014",
+                        "",
+                        "",
+                    ])
+
+            col_ws = [_CONTENT_W * 0.48, _CONTENT_W * 0.18,
+                      _CONTENT_W * 0.18, _CONTENT_W * 0.16]
             story.append(_data_table(hook_rows, col_widths=col_ws))
         story.append(Spacer(1, 3 * mm))
 
@@ -782,7 +700,193 @@ def _page_hook_intelligence(data: dict) -> list:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PAGE 5 — Visual Pattern Analysis
+# PAGE 5 — Your Creative Gaps — With ₹ Impact
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _build_gaps(data: dict) -> list[dict]:
+    """Build a unified list of creative gaps from 3 sources."""
+    intel_data   = data.get("category_intel", {})
+    fatigue_data = data.get("fatigue_analysis", {})
+    impact_data  = data.get("impact_estimate", {})
+    brand        = data["brand"]
+    ads          = data["client_ads"]
+    gaps: list[dict] = []
+
+    category = (brand.get("category") or "this category").title()
+
+    # Build impact lookup: gap_key -> impact info
+    impact_lookup = {}
+    per_gap = impact_data.get("per_gap_impact", [])
+    for gi in per_gap:
+        key = gi.get("gap_type", "") + ":" + gi.get("gap_title", "")
+        impact_lookup[key] = gi
+
+    # ── Source 1: Trigger (angle) gaps ────────────────────────────────────
+    trigger_analysis = intel_data.get("trigger_analysis", {})
+    client_triggers  = set(
+        fatigue_data.get("hook_diversity", {}).get("triggers_used", []))
+    profitable_triggers = trigger_analysis.get("by_profitable_only", {})
+    total_pt = sum(profitable_triggers.values()) or 1
+
+    for trigger, count in profitable_triggers.items():
+        if trigger not in client_triggers:
+            pct = round(count / total_pt * 100, 1)
+            if pct >= 5:
+                title = f"Zero {trigger.replace('_', ' ').title()} Creatives"
+                gap = {
+                    "type": "ANGLE GAP",
+                    "title": title,
+                    "competitor_usage": f"{pct:.0f}% of profitable competitor ads",
+                    "your_usage": "0%",
+                    "impact": (f"Missing a proven conversion angle "
+                               f"in {category}"),
+                }
+                # Try to find impact estimate
+                _attach_impact(gap, impact_lookup)
+                gaps.append(gap)
+
+    # ── Source 2: Format gaps ─────────────────────────────────────────────
+    format_analysis = intel_data.get("format_analysis", {})
+    active_ads = [a for a in ads if a.get("is_active")]
+    total_client = len(active_ads) or 1
+    client_fmt_counts = Counter(
+        a.get("creative_type", "unknown") for a in active_ads)
+
+    for fmt, fdata in format_analysis.items():
+        if fmt == "unknown":
+            continue
+        client_pct = round(client_fmt_counts.get(fmt, 0) / total_client * 100, 1)
+        winner_pct = fdata.get("winner_pct", 0)
+        if client_pct == 0 and winner_pct >= 10:
+            title = f"No {fmt.title()} Ads"
+            gap = {
+                "type": "FORMAT GAP",
+                "title": title,
+                "competitor_usage": (
+                    f"{fdata.get('total_pct', 0):.0f}% of competitor ads, "
+                    f"{winner_pct:.0f}% of winners"),
+                "your_usage": "0%",
+                "impact": (f"{fmt.title()} format has "
+                           f"{fdata.get('win_rate', 0):.0f}% win rate "
+                           f"\u2014 high ROI potential"),
+            }
+            _attach_impact(gap, impact_lookup)
+            gaps.append(gap)
+
+    # ── Source 3: Hook structure gaps ─────────────────────────────────────
+    hook_analysis = intel_data.get("hook_structure_analysis", {})
+    client_hooks  = set(
+        fatigue_data.get("hook_diversity", {}).get("hook_structures_used", []))
+    profitable_hooks = hook_analysis.get("by_profitable_only", {})
+    total_hc = sum(profitable_hooks.values()) or 1
+
+    for hook, count in profitable_hooks.items():
+        if hook not in client_hooks:
+            pct = round(count / total_hc * 100, 1)
+            if pct >= 10:
+                hook_win_rate = hook_analysis.get(
+                    "profitable_rate_by_hook", {}).get(hook, 0)
+                title = (f"No '{hook.replace('_', ' ').title()}' Hooks")
+                gap = {
+                    "type": "HOOK STRUCTURE GAP",
+                    "title": title,
+                    "competitor_usage": (
+                        f"{pct:.0f}% of profitable competitor hooks"),
+                    "your_usage": "0%",
+                    "impact": (f"This hook structure has "
+                               f"{hook_win_rate:.0f}% win rate"),
+                }
+                _attach_impact(gap, impact_lookup)
+                gaps.append(gap)
+
+    # Sort by estimated impact (highest ₹ first), then by type priority
+    type_order = {"ANGLE GAP": 0, "FORMAT GAP": 1, "HOOK STRUCTURE GAP": 2}
+    gaps.sort(key=lambda g: (
+        -g.get("estimated_monthly_impact", 0),
+        type_order.get(g["type"], 9),
+    ))
+    return gaps
+
+
+def _attach_impact(gap: dict, impact_lookup: dict) -> None:
+    """Attach impact estimate data to a gap if available."""
+    # Try exact match first, then fuzzy by title
+    key = gap["type"] + ":" + gap["title"]
+    if key in impact_lookup:
+        gi = impact_lookup[key]
+        gap["estimated_monthly_impact"] = float(gi.get("estimated_monthly_impact_inr", 0))
+        gap["confidence"] = gi.get("confidence", "")
+        return
+    # Fuzzy: match by gap title keywords in any impact entry
+    title_lower = gap["title"].lower()
+    for ik, gi in impact_lookup.items():
+        if gi.get("gap_title", "").lower() in title_lower or title_lower in ik.lower():
+            gap["estimated_monthly_impact"] = float(gi.get("estimated_monthly_impact_inr", 0))
+            gap["confidence"] = gi.get("confidence", "")
+            return
+
+
+def _page_gap_analysis(data: dict) -> list:
+    story = []
+
+    # Top accent bar
+    story.append(HRFlowable(width="100%", thickness=4, color=_TEAL))
+    story.append(Spacer(1, 4 * mm))
+
+    story.append(Paragraph(
+        "Your Creative Gaps \u2014 With \u20b9 Impact", S_H2))
+    story.append(Paragraph(
+        "Where your competitors are monetizing and you are not",
+        S_SUBTITLE))
+
+    gaps = _build_gaps(data)
+
+    if not gaps:
+        story.append(Paragraph(
+            "No significant creative gaps detected. Your creative strategy "
+            "appears well-aligned with competitor patterns.",
+            S_BODY))
+        return story
+
+    for gap in gaps[:6]:
+        # Build structured callout content
+        parts = [
+            f"<font size='8'><b>{gap['type']}</b></font><br/>",
+            f"<font size='12'><b>{gap['title']}</b></font><br/>",
+            f"Competitor usage: {gap['competitor_usage']}<br/>",
+            f"Your usage: {gap['your_usage']}<br/>",
+        ]
+
+        # ₹ impact line
+        impact_amt = gap.get("estimated_monthly_impact", 0)
+        if impact_amt > 0:
+            parts.append(
+                f"<font color='{_RED.hexval()}'><b>Estimated monthly cost of "
+                f"this gap: {_format_inr(impact_amt)}</b></font><br/>")
+            confidence = gap.get("confidence", "")
+            if confidence:
+                parts.append(
+                    f"<font color='{_GREY.hexval()}'>"
+                    f"Confidence: {confidence}</font><br/>")
+
+        parts.append(
+            f"<font color='{_GREY.hexval()}'><i>"
+            f"{gap['impact']}</i></font>")
+        story.append(_callout_box("".join(parts)))
+        story.append(Spacer(1, 3 * mm))
+
+    story.append(Spacer(1, 4 * mm))
+    story.append(Paragraph(
+        "Each gap represents a creative territory your competitors are "
+        "actively monetizing. Closing these gaps is the highest-leverage "
+        "action for your ad account's performance.",
+        S_BODY))
+
+    return story
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE 6 — Visual Pattern Intelligence
 # ══════════════════════════════════════════════════════════════════════════════
 
 _PATTERN_LABELS = {
@@ -794,25 +898,25 @@ _PATTERN_LABELS = {
     "ugc_style_pct": "UGC/raw style",
 }
 
-_PATTERN_INTERPRETATIONS = {
+_PATTERN_ACTIONS = {
     "face_dominant_pct": (
-        "the algorithm rewards authenticity and human connection "
-        "signals in this category"),
+        "ACTION: Feature a real person (face visible) in every new creative. "
+        "Prioritize close-ups and authentic expressions over stock imagery."),
     "text_overlay_pct": (
-        "strong opening text hooks are critical for scroll-stopping "
-        "in this vertical"),
+        "ACTION: Every new creative must include a text overlay with a problem "
+        "statement or claim in \u22647 words."),
     "minimal_aesthetic_pct": (
-        "clean, uncluttered visuals cut through the noise in "
-        "crowded feeds"),
+        "ACTION: Use clean backgrounds with single focal points. "
+        "Avoid cluttered layouts with multiple competing elements."),
     "before_after_pct": (
-        "transformation proof is a dominant persuasion pattern "
-        "\u2014 viewers need to see the result"),
+        "ACTION: Create before/after content showing visible transformation. "
+        "Use split-screen or swipe formats."),
     "product_focused_pct": (
-        "direct product presentation builds purchase intent better "
-        "than lifestyle imagery here"),
+        "ACTION: Lead with clear product shots. Show the actual product "
+        "prominently, not just lifestyle context."),
     "ugc_style_pct": (
-        "raw, user-generated aesthetics outperform polished studio "
-        "content"),
+        "ACTION: Shoot with phone-quality aesthetics. Raw, unpolished "
+        "content outperforms studio-grade production in this category."),
 }
 
 
@@ -824,7 +928,7 @@ def _page_visual_patterns(data: dict) -> list:
     story.append(HRFlowable(width="100%", thickness=4, color=_TEAL))
     story.append(Spacer(1, 4 * mm))
 
-    story.append(Paragraph("What Winning Ads Look Like", S_H2))
+    story.append(Paragraph("Visual Pattern Intelligence", S_H2))
 
     visual_stats = intel_data.get("visual_pattern_stats", {})
     total_analyzed = visual_stats.get("total_analyzed", 0)
@@ -847,175 +951,42 @@ def _page_visual_patterns(data: dict) -> list:
         pct = visual_stats.get(key, 0)
         if pct > 0:
             pattern_items.append((key, label, pct))
+
     pattern_items.sort(key=lambda x: x[2], reverse=True)
 
     if pattern_items:
-        vp_header = ["Visual Pattern", "% of Winners"]
+        # Table with pattern + pct + action
+        vp_header = ["Visual Pattern", "% of Winners", "Action"]
         vp_rows = [vp_header]
-        for _, label, pct in pattern_items:
-            vp_rows.append([label, f"{pct:.0f}%"])
+        for key, label, pct in pattern_items:
+            action = _PATTERN_ACTIONS.get(key, "")
+            # Shorten action for table cell
+            action_short = action.replace("ACTION: ", "") if action else ""
+            vp_rows.append([label, f"{pct:.0f}%", action_short])
 
         story.append(_data_table(
             vp_rows,
-            col_widths=[_CONTENT_W * 0.6, _CONTENT_W * 0.4],
+            col_widths=[_CONTENT_W * 0.22, _CONTENT_W * 0.13, _CONTENT_W * 0.65],
         ))
-        story.append(Spacer(1, 4 * mm))
+        story.append(Spacer(1, 5 * mm))
 
-        # Prose interpretation of top pattern
-        top_key, top_label, top_pct = pattern_items[0]
-        interp = _PATTERN_INTERPRETATIONS.get(top_key, "this pattern is dominant among winners")
-        story.append(Paragraph(
-            f"The dominance of <b>{top_label.lower()}</b> content "
-            f"({top_pct:.0f}% of winners) suggests {interp}.",
-            S_BODY))
-
-        # Second pattern if different enough
-        if len(pattern_items) >= 2:
-            sec_key, sec_label, sec_pct = pattern_items[1]
-            if sec_pct >= 20:
-                sec_interp = _PATTERN_INTERPRETATIONS.get(
-                    sec_key, "this pattern also appears frequently")
+        # Visual Checklist
+        story.append(Paragraph("Visual Checklist for Creative Team", S_H3))
+        for key, label, pct in pattern_items:
+            if pct >= 20:
                 story.append(Paragraph(
-                    f"Additionally, <b>{sec_label.lower()}</b> at "
-                    f"{sec_pct:.0f}% indicates {sec_interp}.",
-                    S_BODY))
+                    f"<font color='{_GREEN.hexval()}'>\u2713</font> "
+                    f"{label} ({pct:.0f}% of winners) \u2014 include in every brief",
+                    S_CHECK_G))
+            else:
+                story.append(Paragraph(
+                    f"<font color='{_GREY.hexval()}'>\u25CB</font> "
+                    f"{label} ({pct:.0f}% of winners) \u2014 test selectively",
+                    _s(f"vcheck_{key}", fontSize=9, textColor=_GREY, leading=12)))
     else:
         story.append(Paragraph(
             "<i>No visual patterns detected above 0% threshold.</i>",
             S_SECTION_NOTE))
-
-    return story
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PAGE 6 — Gap Analysis
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _build_gaps(data: dict) -> list[dict]:
-    """Build a unified list of creative gaps from 3 sources."""
-    intel_data   = data.get("category_intel", {})
-    fatigue_data = data.get("fatigue_analysis", {})
-    brand        = data["brand"]
-    ads          = data["client_ads"]
-    gaps: list[dict] = []
-
-    category = (brand.get("category") or "this category").title()
-
-    # ── Source 1: Trigger (angle) gaps ────────────────────────────────────
-    trigger_analysis = intel_data.get("trigger_analysis", {})
-    client_triggers  = set(
-        fatigue_data.get("hook_diversity", {}).get("triggers_used", []))
-    profitable_triggers = trigger_analysis.get("by_profitable_only", {})
-    total_pt = sum(profitable_triggers.values()) or 1
-
-    for trigger, count in profitable_triggers.items():
-        if trigger not in client_triggers:
-            pct = round(count / total_pt * 100, 1)
-            if pct >= 5:
-                gaps.append({
-                    "type": "ANGLE GAP",
-                    "title": f"Zero {trigger.replace('_', ' ').title()} Creatives",
-                    "competitor_usage": f"{pct:.0f}% of profitable competitor ads",
-                    "your_usage": "0%",
-                    "impact": (f"Missing a proven conversion angle "
-                               f"in {category}"),
-                })
-
-    # ── Source 2: Format gaps ─────────────────────────────────────────────
-    format_analysis = intel_data.get("format_analysis", {})
-    active_ads = [a for a in ads if a.get("is_active")]
-    total_client = len(active_ads) or 1
-    client_fmt_counts = Counter(
-        a.get("creative_type", "unknown") for a in active_ads)
-
-    for fmt, fdata in format_analysis.items():
-        if fmt == "unknown":
-            continue
-        client_pct = round(client_fmt_counts.get(fmt, 0) / total_client * 100, 1)
-        winner_pct = fdata.get("winner_pct", 0)
-        if client_pct == 0 and winner_pct >= 10:
-            gaps.append({
-                "type": "FORMAT GAP",
-                "title": f"No {fmt.title()} Ads",
-                "competitor_usage": (
-                    f"{fdata.get('total_pct', 0):.0f}% of competitor ads, "
-                    f"{winner_pct:.0f}% of winners"),
-                "your_usage": "0%",
-                "impact": (f"{fmt.title()} format has "
-                           f"{fdata.get('win_rate', 0):.0f}% win rate "
-                           f"\u2014 high ROI potential"),
-            })
-
-    # ── Source 3: Hook structure gaps ─────────────────────────────────────
-    hook_analysis = intel_data.get("hook_structure_analysis", {})
-    client_hooks  = set(
-        fatigue_data.get("hook_diversity", {}).get("hook_structures_used", []))
-    profitable_hooks = hook_analysis.get("by_profitable_only", {})
-    total_hc = sum(profitable_hooks.values()) or 1
-
-    for hook, count in profitable_hooks.items():
-        if hook not in client_hooks:
-            pct = round(count / total_hc * 100, 1)
-            if pct >= 10:
-                hook_win_rate = hook_analysis.get(
-                    "profitable_rate_by_hook", {}).get(hook, 0)
-                gaps.append({
-                    "type": "HOOK STRUCTURE GAP",
-                    "title": (f"No '{hook.replace('_', ' ').title()}' "
-                              f"Hooks"),
-                    "competitor_usage": (
-                        f"{pct:.0f}% of profitable competitor hooks"),
-                    "your_usage": "0%",
-                    "impact": (f"This hook structure has "
-                               f"{hook_win_rate:.0f}% win rate"),
-                })
-
-    # Sort by type priority
-    type_order = {"ANGLE GAP": 0, "FORMAT GAP": 1, "HOOK STRUCTURE GAP": 2}
-    gaps.sort(key=lambda g: type_order.get(g["type"], 9))
-    return gaps
-
-
-def _page_gap_analysis(data: dict) -> list:
-    story = []
-
-    # Top accent bar
-    story.append(HRFlowable(width="100%", thickness=4, color=_TEAL))
-    story.append(Spacer(1, 4 * mm))
-
-    story.append(Paragraph("Critical Creative Gaps", S_H2))
-    story.append(Paragraph(
-        "Where your competitors are monetizing and you are not",
-        S_SUBTITLE))
-
-    gaps = _build_gaps(data)
-
-    if not gaps:
-        story.append(Paragraph(
-            "No significant creative gaps detected. Your creative strategy "
-            "appears well-aligned with competitor patterns.",
-            S_BODY))
-        return story
-
-    for gap in gaps[:6]:
-        # Build structured callout content
-        html = (
-            f"<font size='8'><b>{gap['type']}</b></font><br/>"
-            f"<font size='12'><b>{gap['title']}</b></font><br/>"
-            f"Competitor usage: {gap['competitor_usage']}<br/>"
-            f"Your usage: {gap['your_usage']}<br/>"
-            f"<font color='{_GREY.hexval()}'><i>"
-            f"{gap['impact']}</i></font>"
-        )
-        story.append(_callout_box(html))
-        story.append(Spacer(1, 3 * mm))
-
-    story.append(Spacer(1, 4 * mm))
-    story.append(Paragraph(
-        "Each gap represents a creative territory your competitors are "
-        "actively monetizing. Closing these gaps is the highest-leverage "
-        "action for your ad account's performance.",
-        S_BODY))
 
     return story
 
@@ -1033,6 +1004,7 @@ _BOF_TRIGGERS  = {"urgency", "status"}
 def _page_creative_strategy(data: dict) -> list:
     intel_data   = data.get("category_intel", {})
     fatigue_data = data.get("fatigue_analysis", {})
+    brand_intel  = data.get("brand_intel", {})
     brand        = data["brand"]
     story        = []
 
@@ -1061,9 +1033,13 @@ def _page_creative_strategy(data: dict) -> list:
             best_wr = wr
             best_format = fmt
 
+    # Get brand products for specificity
+    products = brand_intel.get("products_detected", [])
+
     matrix_rows: list[list[str]] = []
 
-    # From angle gaps
+    # From angle gaps — use product names for specificity
+    product_idx = 0
     for gap in gaps:
         if gap["type"] == "ANGLE GAP":
             trigger = (gap["title"]
@@ -1077,13 +1053,25 @@ def _page_creative_strategy(data: dict) -> list:
                 stage = "MOF"
             else:
                 stage = "BOF"
+
+            # Add product specificity if available
+            label = trigger
+            if products and product_idx < len(products):
+                product_name = products[product_idx]
+                if isinstance(product_name, dict):
+                    product_name = product_name.get("name", "")
+                if product_name:
+                    label = f"{trigger} featuring {product_name}"
+                product_idx += 1
+
             matrix_rows.append([
-                trigger, best_format.title(), stage, "3\u20135"])
+                label, best_format.title(), stage, "3\u20135"])
 
     # If no angle gaps, use top 3 competitor triggers instead
     if not matrix_rows:
         trigger_analysis = intel_data.get("trigger_analysis", {})
         by_profitable = trigger_analysis.get("by_profitable_only", {})
+        product_idx = 0
         for trigger, _count in sorted(
             by_profitable.items(), key=lambda x: x[1], reverse=True
         )[:3]:
@@ -1094,6 +1082,15 @@ def _page_creative_strategy(data: dict) -> list:
                 stage = "MOF"
             else:
                 stage = "BOF"
+
+            if products and product_idx < len(products):
+                product_name = products[product_idx]
+                if isinstance(product_name, dict):
+                    product_name = product_name.get("name", "")
+                if product_name:
+                    label = f"{label} featuring {product_name}"
+                product_idx += 1
+
             matrix_rows.append([
                 label, best_format.title(), stage, "3\u20135"])
 
@@ -1101,8 +1098,8 @@ def _page_creative_strategy(data: dict) -> list:
         header = ["Angle", "Format", "Funnel Stage", "Recommended Count"]
         story.append(_data_table(
             [header] + matrix_rows,
-            col_widths=[_CONTENT_W * 0.30, _CONTENT_W * 0.22,
-                        _CONTENT_W * 0.22, _CONTENT_W * 0.26],
+            col_widths=[_CONTENT_W * 0.38, _CONTENT_W * 0.18,
+                        _CONTENT_W * 0.18, _CONTENT_W * 0.26],
         ))
     else:
         story.append(Paragraph(
@@ -1118,12 +1115,18 @@ def _page_creative_strategy(data: dict) -> list:
     n_creatives = n_angles * 4  # midpoint of 3-5 per angle
     gap_count = len([g for g in gaps if g["type"] == "ANGLE GAP"])
 
+    # Build specific priority list from gaps
+    gap_priorities = []
+    for g in gaps[:3]:
+        gap_priorities.append(g["title"].lower())
+    priority_text = (", ".join(gap_priorities) if gap_priorities
+                     else "top-performing competitor angles")
+
     calendar_items = [
         (
             "Week 1",
             f"Launch {n_creatives} new creatives across "
-            f"{n_angles} angles. Prioritize "
-            f"{'gaps identified above' if gap_count else 'top-performing competitor angles'}."
+            f"{n_angles} angles. Priority: {priority_text}."
         ),
         (
             "Week 2",
@@ -1166,40 +1169,34 @@ def _page_creative_strategy(data: dict) -> list:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PAGE 8 — Data-Backed Concepts
+# PAGE 8 — Sample Creative Briefs
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _page_concepts(data: dict) -> list:
-    intel_data = data.get("category_intel", {})
-    concepts   = data.get("sample_concepts", [])
-    brand      = data["brand"]
-    story      = []
+def _page_sample_briefs(data: dict) -> list:
+    concepts = data.get("sample_concepts", [])
+    brand    = data["brand"]
+    story    = []
 
     # Top accent bar
     story.append(HRFlowable(width="100%", thickness=4, color=_TEAL))
     story.append(Spacer(1, 4 * mm))
 
-    story.append(Paragraph("High-Conversion Creative Concepts", S_H2))
+    story.append(Paragraph("Sample Creative Briefs", S_H2))
     story.append(Paragraph(
-        "Each concept is linked to proven competitor patterns",
+        "Production-ready briefs derived from competitor intelligence",
         S_SUBTITLE))
 
     if not concepts:
         story.append(Paragraph(
-            "<i>Creative concepts are generated during the full pipeline "
-            "run. Run the sprint mode to see 50+ data-backed concepts "
-            "here.</i>", S_SECTION_NOTE))
+            "<i>Creative briefs are generated during the full pipeline "
+            "run. Run the sprint mode to see 50+ production-ready briefs.</i>",
+            S_SECTION_NOTE))
         story.append(Spacer(1, 8 * mm))
         story.append(_cta_banner(brand["name"]))
         return story
 
-    # Trigger stats for "why this works"
-    trigger_stats = intel_data.get(
-        "trigger_analysis", {}).get("by_profitable_only", {})
-    total_winners = sum(trigger_stats.values()) or 1
-
     for i, concept in enumerate(concepts[:5], 1):
-        story += _concept_card(i, concept, trigger_stats, total_winners)
+        story += _brief_card(i, concept)
 
     story.append(Spacer(1, 8 * mm))
     story.append(_cta_banner(brand["name"]))
@@ -1207,84 +1204,95 @@ def _page_concepts(data: dict) -> list:
     return story
 
 
-def _concept_card(
-    index: int,
-    concept: dict,
-    trigger_stats: dict,
-    total_winners: int,
-) -> list:
-    """Render one concept card with hook, angle, preview, and 'why this works'."""
+def _brief_card(index: int, concept: dict) -> list:
+    """Render one creative brief card with full details."""
     elements: list = []
 
-    hook  = concept.get("hook_text") or "\u2014"
+    hook = concept.get("hook_text") or "\u2014"
     angle = concept.get("psychological_angle") or ""
+    fmt = concept.get("format") or concept.get("creative_type") or ""
 
-    # Hook number + text
+    # Hook text (prominent)
     elements.append(Paragraph(
         f"<font color='{_TEAL.hexval()}'>{index}.</font>&nbsp; "
         f"&ldquo;{hook}&rdquo;",
         S_HOOK))
 
-    # Angle badge
-    angle_label = angle.replace("_", " ").title() if angle else "\u2014"
-    elements.append(Paragraph(
-        f"Angle: {angle_label}", S_HOOK_M))
-
-    # Body preview
-    body = concept.get("body_script") or ""
-    if body:
-        preview = body[:150] + ("..." if len(body) > 150 else "")
-        elements.append(Paragraph(preview, _s(
-            f"cprev_{index}", fontSize=9, textColor=_GREY,
-            leftIndent=4 * mm, spaceAfter=2, leading=12)))
-
-    # Visual direction
-    vis = concept.get("visual_direction") or ""
-    if vis:
-        vis_preview = vis[:100] + ("..." if len(vis) > 100 else "")
-        elements.append(Paragraph(
-            f"<b>Visual:</b> {vis_preview}", _s(
-                f"cvis_{index}", fontSize=9, textColor=_GREY,
-                leftIndent=4 * mm, spaceAfter=2, leading=12)))
-
-    # "Why This Works" — data-backed justification
+    # Angle + Format badges
+    badge_parts = []
     if angle:
-        angle_count = trigger_stats.get(angle, 0)
-        angle_pct = round(angle_count / total_winners * 100, 1)
-        if angle_pct > 0:
-            why_works = (
-                f"Based on {angle_pct:.0f}% competitor success rate for "
-                f"{angle.replace('_', ' ')} hooks")
-        else:
-            why_works = (
-                f"Fills an untapped angle gap \u2014 "
-                f"{angle.replace('_', ' ')} is underused in this category")
-    else:
-        why_works = "Data-driven concept based on competitor intelligence"
+        badge_parts.append(angle.replace("_", " ").title())
+    if fmt:
+        badge_parts.append(fmt.replace("_", " ").title())
+    prod_diff = concept.get("production_difficulty", "")
+    if prod_diff:
+        badge_parts.append(f"Difficulty: {prod_diff}")
+    if badge_parts:
+        elements.append(Paragraph(
+            " &bull; ".join(badge_parts), S_HOOK_M))
 
-    elements.append(Paragraph(
-        f"<font color='{_TEAL.hexval()}'><b>Why this works:</b></font> "
-        f"{why_works}",
-        _s(f"cwhy_{index}", fontSize=9, leading=12,
-           leftIndent=4 * mm, spaceAfter=4)))
+    # Text overlay
+    text_overlay = concept.get("text_overlay", "")
+    if text_overlay:
+        elements.append(Paragraph(
+            f"<b>Text overlay:</b> &ldquo;{text_overlay}&rdquo;",
+            _s(f"bto_{index}", fontSize=9, leftIndent=4 * mm,
+               spaceAfter=2, leading=12)))
 
-    elements.append(Spacer(1, 2 * mm))
+    # Visual direction summary
+    vis = concept.get("visual_direction") or ""
+    if isinstance(vis, dict):
+        vis_parts = []
+        for vk in ("scene_description", "talent_direction", "product_placement"):
+            vv = vis.get(vk, "")
+            if vv:
+                vis_parts.append(str(vv))
+        vis = ". ".join(vis_parts)
+    if vis:
+        vis_preview = vis[:200] + ("..." if len(vis) > 200 else "")
+        elements.append(Paragraph(
+            f"<b>Visual:</b> {vis_preview}",
+            _s(f"bvis_{index}", fontSize=9, textColor=_GREY,
+               leftIndent=4 * mm, spaceAfter=2, leading=12)))
+
+    # Competitor inspiration
+    comp_ref = concept.get("competitor_inspiration", "")
+    if not comp_ref:
+        comp_ref = concept.get("competitor_reference", "")
+    if comp_ref:
+        elements.append(Paragraph(
+            f"<b>Inspired by:</b> {comp_ref}",
+            _s(f"binsp_{index}", fontSize=9, textColor=_GREY,
+               leftIndent=4 * mm, spaceAfter=2, leading=12)))
+
+    # "Why this works" with data backing
+    data_backing = concept.get("data_backing", "")
+    body = concept.get("body_script") or ""
+    # Extract data backing from body_script if stored there
+    if not data_backing and "[DATA BACKING]" in body:
+        db_idx = body.index("[DATA BACKING]")
+        data_backing = body[db_idx + len("[DATA BACKING]"):].strip()
+
+    if data_backing:
+        elements.append(Paragraph(
+            f"<font color='{_TEAL.hexval()}'><b>Why this works:</b></font> "
+            f"{data_backing}",
+            _s(f"bwhy_{index}", fontSize=9, leading=12,
+               leftIndent=4 * mm, spaceAfter=4)))
+
+    elements.append(Spacer(1, 3 * mm))
     return elements
 
 
 def _cta_banner(brand_name: str) -> Table:
-    """The money shot — CTA banner for the paid sprint."""
+    """CTA banner for the paid sprint — updated messaging."""
     lines = [
         Paragraph(
-            "This is a sample of the 50+ strategic concepts included "
-            "in a full Creative Sprint.",
+            "This audit includes 5 sample briefs. The full Creative Sprint "
+            "includes 50+ production-ready briefs with complete visual direction, "
+            "sound design, A/B test plans, and card-by-card carousel breakdowns.",
             _s("cta1", fontSize=11, textColor=_NAVY, alignment=TA_CENTER,
                fontName="Helvetica-Bold", spaceAfter=4)),
-        Paragraph(
-            "Each concept includes hook copy, body script, visual direction, "
-            "3 CTA variations, format specification, and competitor reference.",
-            _s("cta2", fontSize=9, textColor=_GREY, alignment=TA_CENTER,
-               spaceAfter=8)),
         Paragraph(
             "Want the full package? Reply to this message.",
             _s("cta3", fontSize=13, textColor=_TEAL, alignment=TA_CENTER,
@@ -1311,7 +1319,7 @@ def _cta_banner(brand_name: str) -> Table:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PAGE 9 — Priority Action Plan
+# PAGE 9 — Priority Action Plan + ROI
 # ══════════════════════════════════════════════════════════════════════════════
 
 _PRIORITY_COLORS = {
@@ -1323,13 +1331,14 @@ _PRIORITY_COLORS = {
 
 def _page_action_plan(data: dict) -> list:
     waste_report = data.get("waste_report", {})
+    impact_data  = data.get("impact_estimate", {})
     story        = []
 
     # Top accent bar
     story.append(HRFlowable(width="100%", thickness=4, color=_TEAL))
     story.append(Spacer(1, 4 * mm))
 
-    story.append(Paragraph("Priority Action Plan", S_H2))
+    story.append(Paragraph("Priority Action Plan + ROI", S_H2))
     story.append(Spacer(1, 3 * mm))
 
     # ── Section A: Top Actions ────────────────────────────────────────────
@@ -1386,15 +1395,55 @@ def _page_action_plan(data: dict) -> list:
 
     story.append(Spacer(1, 6 * mm))
 
-    # ── Section B: What This Audit Didn't Cover ───────────────────────────
-    story.append(Paragraph("B. What This Audit Didn't Cover", S_H3))
+    # ── Section B: ROI Projection ─────────────────────────────────────────
+    if impact_data:
+        story.append(Paragraph("B. ROI Projection", S_H3))
+
+        total_waste = _get_total_monthly_waste(impact_data)
+        sprint_roi = impact_data.get("sprint_roi", {})
+        sprint_price = sprint_roi.get("sprint_price", 0)
+        estimated_savings = sprint_roi.get("estimated_monthly_savings", total_waste)
+        payback_days = sprint_roi.get("payback_days", 0)
+
+        # Calculate payback if not provided
+        if not payback_days and sprint_price and estimated_savings:
+            payback_days = round(sprint_price / (estimated_savings / 30))
+
+        roi_parts = []
+        if sprint_price:
+            roi_parts.append(
+                f"<b>Investment:</b> {_format_inr(sprint_price)} for full Creative Sprint")
+        if estimated_savings:
+            roi_parts.append(
+                f"<b>Estimated monthly savings:</b> {_format_inr(estimated_savings)}")
+        if payback_days:
+            roi_parts.append(
+                f"<b>Payback period:</b> {payback_days} days")
+
+        if roi_parts:
+            roi_html = "<br/>".join(roi_parts)
+            story.append(_callout_box(roi_html))
+        elif total_waste > 0:
+            story.append(Paragraph(
+                f"<b>Your estimated creative waste:</b> "
+                f"{_format_inr(total_waste)}/month. A structured creative "
+                f"sprint can recover a significant portion of this.",
+                S_BODY))
+
+        story.append(Spacer(1, 6 * mm))
+
+    # ── Section C: What This Audit Didn't Cover ──────────────────────────
+    section_label = "C" if impact_data else "B"
+    story.append(Paragraph(
+        f"{section_label}. What This Audit Didn't Cover", S_H3))
 
     not_covered = [
-        "50+ data-backed creative concepts (included in full Creative Sprint)",
+        "50+ production-ready creative briefs with visual direction, "
+        "sound design, and A/B test plans (included in full Creative Sprint)",
         "Weekly competitor tracking and creative refresh alerts",
         ("Performance feedback loop \u2014 which hooks actually convert "
          "for YOUR brand"),
-        "Ready-to-execute visual briefs with format specifications",
+        "Card-by-card carousel breakdowns and complete production specs",
     ]
     for item in not_covered:
         story.append(Paragraph(
@@ -1416,6 +1465,17 @@ def _page_action_plan(data: dict) -> list:
 # ══════════════════════════════════════════════════════════════════════════════
 # Shared helpers
 # ══════════════════════════════════════════════════════════════════════════════
+
+def _badge(text: str, bg_color=None, text_color=None) -> Paragraph:
+    """Inline colored badge as a Paragraph."""
+    tc = text_color or _WHITE
+    bg = bg_color or _TEAL
+    return Paragraph(
+        f"<font color='{tc.hexval() if hasattr(tc, 'hexval') else tc}'>"
+        f"<b>{text}</b></font>",
+        _s(f"badge_{id(text)}", fontSize=8, backColor=bg,
+           leftIndent=2 * mm, rightIndent=2 * mm, spaceAfter=2))
+
 
 def _verdict_box(text: str) -> Table:
     """Coloured banner with the one-line verdict."""

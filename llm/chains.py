@@ -397,17 +397,73 @@ def chain_concept_generation(
         }
         waste = dict(waste_report) if waste_report else {}
 
-        # Load category intelligence for hook database and visual patterns
-        # Analysis modules use lowercase + underscores for file slugs
+        # ── Load enriched data sources ──────────────────────────────────────
+        slug = safe_brand_slug(client_brand_name)
         intel_slug = client_brand_name.lower().replace(" ", "_")
-        intel_path = PROC_DIR / f"{intel_slug}_category_intelligence.json"
-        category_intel_data = {}
-        if intel_path.exists():
-            try:
-                category_intel_data = json.loads(
-                    intel_path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                logger.warning("Could not load category intel from %s", intel_path)
+
+        # Brand intel — products, prices, ingredients, language profile
+        brand_intel_data = _load_json_file(
+            PROC_DIR / f"{slug}_brand_intel.json",
+            f"{intel_slug}_brand_intel.json",
+        )
+        brand_products = json.dumps(
+            brand_intel_data.get("products_detected", []),
+            ensure_ascii=False, indent=2,
+        )
+        brand_prices = json.dumps(
+            brand_intel_data.get("price_points", []),
+            ensure_ascii=False, indent=2,
+        )
+        brand_ingredients = json.dumps(
+            brand_intel_data.get("key_ingredients", []),
+            ensure_ascii=False, indent=2,
+        )
+        brand_language_profile = json.dumps(
+            brand_intel_data.get("language_profile", {}),
+            ensure_ascii=False, indent=2,
+        )
+
+        # Competitor deep dive — top winner breakdowns
+        deep_dive_data = _load_json_file(
+            PROC_DIR / f"{slug}_competitor_deep_dive.json",
+            f"{intel_slug}_competitor_deep_dive.json",
+        )
+        competitor_winners_list = []
+        per_competitor = deep_dive_data.get("per_competitor", {})
+        for comp_name, comp_data in per_competitor.items():
+            for winner in (comp_data.get("top_winners") or [])[:3]:
+                competitor_winners_list.append({
+                    "brand": comp_name,
+                    "hook_text": winner.get("full_hook_text"),
+                    "ad_library_id": winner.get("ad_library_id"),
+                    "duration_days": winner.get("duration_days"),
+                    "creative_type": winner.get("creative_type"),
+                    "psychological_trigger": winner.get("psychological_trigger"),
+                    "why_it_works": winner.get("why_it_works"),
+                })
+        competitor_winners = json.dumps(
+            competitor_winners_list, ensure_ascii=False, indent=2,
+        )
+
+        # Impact estimates — per-gap cost ranking
+        impact_data = _load_json_file(
+            PROC_DIR / f"{slug}_impact_estimate.json",
+            f"{intel_slug}_impact_estimate.json",
+        )
+        per_gap = impact_data.get("per_gap_impact", [])
+        per_gap_sorted = sorted(
+            per_gap,
+            key=lambda g: g.get("estimated_monthly_impact_inr", 0),
+            reverse=True,
+        )
+        gap_impact_ranking = json.dumps(
+            per_gap_sorted, ensure_ascii=False, indent=2,
+        )
+
+        # Load category intelligence for hook database and visual patterns
+        category_intel_data = _load_json_file(
+            PROC_DIR / f"{intel_slug}_category_intelligence.json",
+        )
 
         # Hook database — top hooks from profitable competitors (slimmed)
         hook_database = category_intel_data.get("hook_database", {})
@@ -442,6 +498,12 @@ def chain_concept_generation(
             gap_analysis=json.dumps(opportunities, ensure_ascii=False, indent=2),
             winning_patterns=json.dumps(patterns, ensure_ascii=False, indent=2),
             visual_patterns=json.dumps(visual_stats, ensure_ascii=False, indent=2),
+            brand_products=brand_products,
+            brand_prices=brand_prices,
+            brand_ingredients=brand_ingredients,
+            brand_language_profile=brand_language_profile,
+            competitor_winners=competitor_winners,
+            gap_impact_ranking=gap_impact_ranking,
         )
 
         logger.info(
@@ -719,7 +781,17 @@ def _validate_entity_diversity(concepts: list[dict]) -> list[dict]:
         return concepts
 
     def _visual_keywords(concept: dict) -> set[str]:
-        vd = (concept.get("visual_direction") or "").lower()
+        vd = concept.get("visual_direction") or ""
+        if isinstance(vd, dict):
+            # New schema: extract text from scene_description + talent_direction
+            vd = " ".join(
+                str(v) for v in (
+                    vd.get("scene_description", ""),
+                    vd.get("talent_direction", ""),
+                    vd.get("product_placement", ""),
+                )
+            )
+        vd = vd.lower()
         return {w for w in vd.split() if w in _VISUAL_SETTING_KEYWORDS}
 
     # Build clusters using Union-Find approach via dict
@@ -927,21 +999,37 @@ def _save_concepts(conn, brand_id: int, batch_id: str, concepts: list[dict]) -> 
         if data_backing:
             body = f"{body}\n\n[DATA BACKING] {data_backing}"
 
+        # visual_direction is now an object — serialize for both columns
+        vd = concept.get("visual_direction")
+        if isinstance(vd, dict):
+            visual_direction_str = json.dumps(vd, ensure_ascii=False)
+            visual_direction_json = visual_direction_str
+        else:
+            visual_direction_str = vd or ""
+            visual_direction_json = None
+
+        # Store the full concept brief as JSON
+        brief_json = json.dumps(concept, ensure_ascii=False)
+
+        # Use hook_text (new schema) falling back to hook (old schema)
+        hook_text = concept.get("hook_text") or concept.get("hook")
+
         conn.execute(
             """
             INSERT INTO creative_concepts (
                 client_brand_id, batch_id, hook_text, body_script,
                 visual_direction, cta_variations_json, psychological_angle,
                 hook_structure, entity_id_tag, trust_stack_json,
-                format_spec, thumb_stop_score
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                format_spec, thumb_stop_score, visual_direction_json,
+                brief_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 brand_id,
                 batch_id,
-                concept.get("hook"),
+                hook_text,
                 body,
-                concept.get("visual_direction"),
+                visual_direction_str,
                 json.dumps(
                     concept.get("cta_variations", []), ensure_ascii=False
                 ),
@@ -953,11 +1041,26 @@ def _save_concepts(conn, brand_id: int, batch_id: str, concepts: list[dict]) -> 
                 ),
                 concept.get("format_spec"),
                 concept.get("thumb_stop_score"),
+                visual_direction_json,
+                brief_json,
             ),
         )
 
 
 # ── File helpers ──────────────────────────────────────────────────────────────
+
+
+def _load_json_file(*paths: Path) -> dict:
+    """Try loading JSON from multiple path candidates. Return {} on failure."""
+    for p in paths:
+        if isinstance(p, str):
+            p = PROC_DIR / p
+        if p.exists():
+            try:
+                return json.loads(p.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                logger.warning("Could not load JSON from %s", p)
+    return {}
 
 
 def _load_prompt(filename: str) -> Template:

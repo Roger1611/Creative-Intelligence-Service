@@ -2,45 +2,80 @@ You are a senior creative strategist for Indian D2C performance marketing (₹1�
 
 Generate exactly $num_concepts original ad creative concepts for "$brand_name" ($category category).
 
-Brand context:
+Each concept must be a production-ready creative brief that a designer can execute without asking questions.
+
+--- BRAND CONTEXT ---
 $brand_context
 
-Competitor intelligence (use as inspiration — do NOT copy):
+--- BRAND PRODUCT DATA (use these exact product names in hooks and scripts) ---
+$brand_products
+
+--- BRAND PRICE POINTS (reference these in body scripts where natural) ---
+$brand_prices
+
+--- BRAND KEY INGREDIENTS (feature these in concepts) ---
+$brand_ingredients
+
+--- BRAND LANGUAGE PROFILE ---
+$brand_language_profile
+
+--- COMPETITOR INTELLIGENCE (use as inspiration — do NOT copy) ---
 $competitor_intel
 
-Waste diagnosis (gaps to fill):
+--- TOP COMPETITOR ADS TO BEAT (use as inspiration, do NOT copy) ---
+$competitor_winners
+
+--- WASTE DIAGNOSIS (gaps to fill) ---
 $waste_diagnosis
 
-Proven competitor hooks (use as inspiration — do NOT copy verbatim):
+--- GAPS RANKED BY COST (prioritize closing the most expensive gaps) ---
+$gap_impact_ranking
+
+--- PROVEN COMPETITOR HOOKS (use as inspiration — do NOT copy verbatim) ---
 $hook_database
 
-Creative gaps to fill (prioritize these):
+--- CREATIVE GAPS TO FILL (prioritize these) ---
 $gap_analysis
 
-Category winning patterns:
+--- CATEGORY WINNING PATTERNS ---
 $winning_patterns
 
-Visual patterns that win in this category:
+--- VISUAL PATTERNS THAT WIN IN THIS CATEGORY ---
 $visual_patterns
 
-Return a JSON array of exactly $num_concepts concept objects. Each concept must have this exact structure:
+Return a JSON array of exactly $num_concepts concept objects. Each concept must have this EXACT structure:
 
 {
-  "concept_id": "<sequential integer starting from 1>",
-  "hook": "<the first 3 seconds or opening line that stops the scroll — must reference the brand's actual products or category>",
-  "body_script": "<3-5 sentence persuasive narrative — specific to the brand, not generic>",
-  "visual_direction": "<specific description of what the image or video should show: scene, talent, product placement, colors, text overlays, transitions if video>",
+  "concept_id": <sequential integer starting from 1>,
+  "hook_text": "<EXACT text that appears on screen or is spoken in first 3 seconds — MUST mention a specific brand product by name from the BRAND PRODUCT DATA section>",
+  "hook_text_hindi": "<Hindi translation of hook_text if BRAND LANGUAGE PROFILE shows Hindi usage, else null>",
+  "body_script": "<Full 3-5 sentence script. MUST reference a specific product name from BRAND PRODUCT DATA, a specific ingredient from BRAND KEY INGREDIENTS, and a specific benefit. MUST include at least one price point from BRAND PRICE POINTS if price data is available>",
+  "text_overlay": "<EXACT text for the primary text overlay. Max 7 words. Must state problem or claim, NOT brand name>",
+  "visual_direction": {
+    "aspect_ratio": "<one of: 4:5, 9:16, 1:1>",
+    "scene_description": "<Specific scene description — who is in frame, what they are doing, what is visible>",
+    "talent_direction": "<Specific direction for the person in the ad — expression, action, eye line>",
+    "product_placement": "<Where and how the product appears — which specific product, which hand, what moment in the video/image>",
+    "lighting": "<one of: natural daylight, studio soft, ring light, golden hour, high contrast>",
+    "text_overlay_position": "<one of: top third, center, bottom third — include background treatment, e.g. 'top third on semi-transparent dark bar'>",
+    "color_mood": "<e.g. warm earth tones, clean white, bold contrast, pastel soft>"
+  },
+  "sound_design": "<For video — music style, voiceover language (Hindi/English/code-switch based on BRAND LANGUAGE PROFILE), tone. For static — 'N/A'>",
   "cta_variations": ["<CTA option 1>", "<CTA option 2>", "<CTA option 3>"],
+  "cta_placement": "<one of: end card, persistent bottom bar, swipe-up overlay, text in final frame>",
   "psychological_angle": "<one of: status, fear, social_proof, transformation, agitation_solution, curiosity, urgency, authority, belonging, aspiration>",
   "format_recommendation": "<one of: static, carousel, video>",
-  "format_reasoning": "<1 sentence on why this format suits this concept>",
   "format_spec": "<format-specific production instructions — see FORMAT SPEC RULES below>",
+  "carousel_sequence": "<For carousel only — array of objects each with 'card_number', 'visual', 'text_overlay', 'purpose'. Set to null for non-carousel formats>",
   "hook_structure": "<one of: question, number_lead, pattern_interrupt, direct_address, curiosity_gap, transformation, social_proof_lead, urgency_lead, authority_lead, bold_claim>",
   "entity_id_tag": "<hook_structure + '_' + 3-word visual setting, e.g. 'transformation_skincare_before_after', 'social_proof_ugc_testimonial_face'>",
   "trust_stack": ["<at least 2 Indian trust signals from: cod_mention, upi_discount, social_proof_number, certification_badge, whatsapp_cta, price_anchor, emi_mention, free_delivery>"],
   "thumb_stop_score": <integer 1-10>,
-  "data_backing": "<Why This Works: {trigger} angle accounts for X% of profitable competitor ads. {format} format has Y% win rate. This concept fills Gap: {specific gap from gap_analysis}>",
-  "differentiation_note": "<how this concept differs from the brand's existing creatives>"
+  "ab_test_variable": "<The single variable to A/B test first with this concept. Examples: 'hook text vs alternative hook', 'face in frame vs product only', 'Hindi voiceover vs English', '4:5 vs 9:16 aspect ratio'>",
+  "data_backing": "<Why This Works — must cite specific real numbers from the competitor intelligence and winning patterns data provided. Do NOT invent statistics>",
+  "competitor_inspiration": "<Which specific competitor ad (by brand name and hook text) from the TOP COMPETITOR ADS section inspired this, what element was kept, and what was changed for differentiation>",
+  "production_difficulty": "<one of: easy, medium, hard — 'easy' = phone camera + product + one person. 'medium' = planned shoot with specific setup. 'hard' = professional talent, location, multiple props>",
+  "estimated_production_time": "<one of: 1 hour, half day, full day>"
 }
 
 FORMAT SPEC RULES:
@@ -48,6 +83,19 @@ FORMAT SPEC RULES:
 - If format_recommendation is "video": "9:16 vertical, sound-on hook in first 3s, captions mandatory, bottom 35% clear of text, face in frame if possible"
 - If format_recommendation is "carousel": "card_1: video or bold visual hook, cards 2-5: product benefit sequence, final card: price+CTA, 1:1 square each card"
 - You may customise the spec further but MUST include the base requirements above for each format.
+
+CAROUSEL SEQUENCE RULES:
+- If format_recommendation is "carousel", carousel_sequence MUST be an array of objects:
+  [{"card_number": 1, "visual": "<specific visual>", "text_overlay": "<card text>", "purpose": "<why this card>"}]
+- Include card_1 through card_N with specific content per card.
+- If format_recommendation is NOT "carousel", carousel_sequence MUST be null.
+
+PRODUCT-SPECIFIC CONCEPT RULES (mandatory):
+- Every hook_text MUST mention a specific product from the BRAND PRODUCT DATA section by name. Generic hooks like "Transform your skin" are REJECTED.
+- Every body_script MUST mention a specific ingredient from BRAND KEY INGREDIENTS by name.
+- Every body_script MUST include at least one price point from BRAND PRICE POINTS if any price data is available. If no price data is provided, skip this rule.
+- competitor_inspiration MUST reference a real competitor ad from the TOP COMPETITOR ADS section — cite the brand name and hook text.
+- data_backing MUST cite real numbers from the data provided — do not fabricate statistics.
 
 ENTITY ID DIVERSITY (mandatory — stricter than before):
 - Every concept must have a unique entity_id_tag. No two concepts can share the same entity_id_tag.
@@ -92,27 +140,34 @@ TRUST STACK (Indian market specifics — MANDATORY):
 - At least 5 concepts must include certification_badge ("dermat-tested", "FSSAI certified", "toxin-free").
 - At least 3 concepts must include whatsapp_cta.
 
+GAP PRIORITIZATION (mandatory):
+- Prioritize closing gaps from the GAPS RANKED BY COST section — the most expensive gaps should be addressed first.
+- Every concept must fill at least one gap from the gap_analysis list.
+- If a gap has high estimated_monthly_impact_inr, dedicate at least 2 concepts to closing it.
+
 DATA-LINKED CONCEPTS (mandatory):
-- Every concept must fill at least one gap from the gap_analysis list
-- Every hook must be inspired by (but not copy) a real hook from the hook_database
-- The data_backing field must reference REAL numbers from the competitor_intel and winning_patterns — do not invent statistics
-- If a concept uses a transformation hook, the data_backing must cite the actual transformation hook percentage from winning_patterns
-- Visual directions must align with the visual_patterns data — if face_dominant_pct is high, prioritize face-in-frame concepts
+- Every concept must fill at least one gap from the gap_analysis list.
+- Every hook must be inspired by (but not copy) a real hook from the hook_database.
+- The data_backing field must reference REAL numbers from the competitor_intel and winning_patterns — do not invent statistics.
+- If a concept uses a transformation hook, the data_backing must cite the actual transformation hook percentage from winning_patterns.
+- Visual directions must align with the visual_patterns data — if face_dominant_pct is high, prioritize face-in-frame concepts.
 
 VISUAL DIRECTION ALIGNMENT:
-- If visual_patterns shows face_dominant_pct > 50%, at least 60% of concepts should include a human face in visual_direction
-- If text_overlay_pct > 60%, every concept must include a text overlay specification in visual_direction
-- If ugc_style_pct > 30%, at least 30% of concepts should use UGC/raw aesthetic in visual_direction
-- These are not arbitrary rules — they are derived from what's actually winning in this category right now
+- If visual_patterns shows face_dominant_pct > 50%, at least 60% of concepts should include a human face in visual_direction scene_description.
+- If text_overlay_pct > 60%, every concept must include a text overlay specification in visual_direction.
+- If ugc_style_pct > 30%, at least 30% of concepts should use UGC/raw aesthetic in visual_direction scene_description.
+- These are not arbitrary rules — they are derived from what's actually winning in this category right now.
 
 Rules:
 - psychological_angle MUST be exactly one of the 10 values listed.
 - format_recommendation MUST be exactly one of: static, carousel, video.
 - hook_structure MUST be exactly one of the 10 values listed.
-- Every hook must be specific to "$brand_name" products — no generic hooks like "Transform your skin" without naming the brand or product.
+- Every hook_text must mention a specific "$brand_name" product from BRAND PRODUCT DATA — no generic hooks.
 - body_script must be 3-5 sentences, max 150 words.
 - cta_variations must contain exactly 3 options.
 - data_backing must reference real numbers from the data provided — do not fabricate statistics.
 - trust_stack must contain at least 2 signals per concept.
 - entity_id_tag must be unique across all concepts in this batch.
+- visual_direction must be an object with all sub-fields filled — not a string.
+- carousel_sequence must be null for non-carousel formats, and a filled array for carousel formats.
 - Return ONLY the JSON array. No markdown fences, no explanation outside the JSON.

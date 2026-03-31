@@ -7,10 +7,10 @@ calendar. Output as PDF + JSON sidecar.
 
 Structure:
   COVER       — Title, brand, date, concept count
-  SECTION 1   — Executive Summary + Waste Diagnosis
+  SECTION 1   — Executive Summary + Waste Diagnosis + ₹ Impact / ROI
   SECTION 2   — Competitor Intelligence Report
-  SECTION 3   — Concepts by Psychological Angle (all 50+)
-  SECTION 4   — Recommended Creative Calendar
+  SECTION 3   — Concepts by Psychological Angle (all 50+, expanded brief format)
+  SECTION 4   — Recommended Creative Calendar (with production difficulty)
 
 CLI: python -m deliverables.sprint_generator --brand "Mamaearth" --output "sprints/"
      python -m deliverables.sprint_generator --brand "Mamaearth" --batch abc123
@@ -40,7 +40,14 @@ from reportlab.platypus import (
     TableStyle,
 )
 
-from config import FATIGUE_AD_MIN_DAYS, get_connection
+from config import FATIGUE_AD_MIN_DAYS, PROC_DIR, get_connection
+from deliverables.utils import (
+    format_inr,
+    format_inr_short,
+    load_json,
+    severity_color,
+    confidence_badge_text,
+)
 from scrapers.utils import safe_brand_slug
 
 logger = logging.getLogger(__name__)
@@ -54,6 +61,7 @@ _GREY   = colors.HexColor("#6B7280")
 _WHITE  = colors.white
 _RED    = colors.HexColor("#E53935")
 _GREEN  = colors.HexColor("#43A047")
+_LIGHT_TEAL = colors.HexColor("#E0F7FA")
 
 PAGE_W, PAGE_H = A4
 _MARGIN = 18 * mm
@@ -71,6 +79,13 @@ _TRIGGER_COLORS = {
     "authority":           colors.HexColor("#1565C0"),
     "belonging":           colors.HexColor("#AB47BC"),
     "aspiration":          colors.HexColor("#00897B"),
+}
+
+# Production difficulty → colour for badges
+_DIFF_COLORS = {
+    "low":    colors.HexColor("#43A047"),
+    "medium": colors.HexColor("#F57C00"),
+    "high":   colors.HexColor("#E53935"),
 }
 
 
@@ -100,6 +115,8 @@ S_LABEL   = _s("label", fontSize=8, textColor=_GREY,
                 fontName="Helvetica-Bold", spaceAfter=1)
 S_FOOTER  = _s("footer", fontSize=8, textColor=_GREY,
                 alignment=TA_CENTER, spaceBefore=4)
+S_SECTION_NOTE = _s("secnote", fontSize=9, textColor=_GREY, leading=12,
+                     fontName="Helvetica-Oblique", spaceAfter=4)
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -220,6 +237,14 @@ def _gather_data(brand_name: str, batch_id: str | None) -> dict:
     finally:
         conn.close()
 
+    # Load pre-computed analysis from processed JSON files
+    slug = brand_name.lower().replace(" ", "_")
+    brand_intel = load_json(PROC_DIR / f"{slug}_brand_intel.json", "brand intel")
+    competitor_deep_dive = load_json(
+        PROC_DIR / f"{slug}_competitor_deep_dive.json", "competitor deep dive")
+    impact_estimate = load_json(
+        PROC_DIR / f"{slug}_impact_estimate.json", "impact estimate")
+
     # Build raw JSON export
     raw_export = {
         "brand": brand,
@@ -238,6 +263,9 @@ def _gather_data(brand_name: str, batch_id: str | None) -> dict:
         "client_ads": client_ads,
         "comp_analysis": comp_analysis,
         "competitors": competitors,
+        "brand_intel": brand_intel,
+        "competitor_deep_dive": competitor_deep_dive,
+        "impact_estimate": impact_estimate,
         "raw_export": raw_export,
     }
 
@@ -311,30 +339,85 @@ def _section_cover(data: dict) -> list:
 # ── SECTION 1: Executive Summary + Waste Diagnosis ───────────────────────────
 
 def _section_executive_summary(data: dict) -> list:
-    wr    = data["waste_report"]
-    ads   = data["client_ads"]
-    story = []
+    wr           = data["waste_report"]
+    ads          = data["client_ads"]
+    impact_data  = data.get("impact_estimate", {})
+    story        = []
 
     story.append(HRFlowable(width="100%", thickness=4, color=_TEAL))
     story.append(Spacer(1, 3 * mm))
     story.append(Paragraph("1. Executive Summary &amp; Waste Diagnosis", S_H1))
     story.append(Spacer(1, 2 * mm))
 
-    # Key metrics row
+    # Key metrics row — now includes ₹ waste if available
     diversity = wr.get("creative_diversity_score")
     avg_refresh = wr.get("avg_refresh_days")
     active_count = len([a for a in ads if a.get("is_active")])
     fatigued_count = len([a for a in ads if a.get("is_active") and
                           (a.get("duration_days") or 0) >= FATIGUE_AD_MIN_DAYS])
 
+    total_waste = _get_total_monthly_waste(impact_data)
+
     metrics = [
-        (f"{diversity:.0f}" if diversity else "—", "Diversity Score"),
-        (f"{avg_refresh:.0f}d" if avg_refresh else "—", "Avg Refresh"),
+        (f"{diversity:.0f}" if diversity else "\u2014", "Diversity Score"),
+        (f"{avg_refresh:.0f}d" if avg_refresh else "\u2014", "Avg Refresh"),
         (str(active_count), "Active Ads"),
         (str(fatigued_count), "Fatigued"),
     ]
+
+    # Replace last metric with ₹ waste if available
+    if total_waste > 0:
+        metrics[3] = (format_inr(total_waste), "Monthly Waste")
+
     story.append(_metric_row(metrics))
     story.append(Spacer(1, 6 * mm))
+
+    # ₹ Impact summary box
+    if total_waste > 0:
+        impact_html = (
+            f"<b>Estimated Creative Waste:</b> "
+            f"{format_inr(total_waste)}/month<br/>"
+        )
+        per_gap = impact_data.get("per_gap_impact", [])
+        # Show top 3 gaps by impact
+        sorted_gaps = sorted(
+            per_gap, key=lambda g: float(g.get("estimated_monthly_impact_inr", 0)),
+            reverse=True)
+        for gi in sorted_gaps[:3]:
+            title = gi.get("gap_title", "")
+            amt = float(gi.get("estimated_monthly_impact_inr", 0))
+            if title and amt:
+                impact_html += (
+                    f"&bull; {title}: {format_inr(amt)}/month<br/>")
+
+        story.append(_callout_box(impact_html))
+        story.append(Spacer(1, 4 * mm))
+
+    # ROI section
+    sprint_roi = impact_data.get("sprint_roi", {})
+    if sprint_roi:
+        sprint_price = sprint_roi.get("sprint_price", 0)
+        est_savings = sprint_roi.get("estimated_monthly_savings", total_waste)
+        payback = sprint_roi.get("payback_days", 0)
+        if not payback and sprint_price and est_savings:
+            payback = round(sprint_price / (est_savings / 30))
+
+        roi_parts = []
+        if sprint_price:
+            roi_parts.append(
+                f"<b>Sprint investment:</b> {format_inr(sprint_price)}")
+        if est_savings:
+            roi_parts.append(
+                f"<b>Estimated monthly savings:</b> {format_inr(est_savings)}")
+        if payback:
+            roi_parts.append(
+                f"<b>Payback period:</b> {payback} days")
+
+        if roi_parts:
+            story.append(Paragraph("ROI Projection", S_H3))
+            for part in roi_parts:
+                story.append(Paragraph(part, S_BODY))
+            story.append(Spacer(1, 4 * mm))
 
     # Fatigue flags
     flags_raw = wr.get("fatigue_flags_json") or "[]"
@@ -343,9 +426,9 @@ def _section_executive_summary(data: dict) -> list:
         story.append(Paragraph("Fatigued Ads Requiring Immediate Refresh", S_H3))
         rows = [["Ad ID", "Days Running", "Reason"]]
         for f in flags:
-            ad_id = f.get("ad_library_id", "—")
-            days = str(f.get("duration_days", "—"))
-            reason = f.get("fatigue_reason", "") or f.get("refresh_suggestion", "—")
+            ad_id = f.get("ad_library_id", "\u2014")
+            days = str(f.get("duration_days", "\u2014"))
+            reason = f.get("fatigue_reason", "") or f.get("refresh_suggestion", "\u2014")
             rows.append([_trunc(ad_id, 22), days, _trunc(reason, 50)])
         story.append(_styled_table(rows, [55 * mm, 25 * mm, _CONTENT_W - 80 * mm]))
         story.append(Spacer(1, 6 * mm))
@@ -357,7 +440,7 @@ def _section_executive_summary(data: dict) -> list:
         story.append(Paragraph("Priority Actions", S_H3))
         for i, rec in enumerate(recs, 1):
             rank = rec.get("rank", i)
-            action = rec.get("action", "—")
+            action = rec.get("action", "\u2014")
             impact = rec.get("expected_impact", "")
             effort = rec.get("effort", "")
             story.append(Paragraph(
@@ -375,6 +458,19 @@ def _section_executive_summary(data: dict) -> list:
                        spaceAfter=4, leftIndent=8 * mm)))
 
     return story
+
+
+def _get_total_monthly_waste(impact_data: dict) -> float:
+    """Extract total estimated monthly waste from impact estimate data."""
+    if not impact_data:
+        return 0.0
+    total = impact_data.get("total_estimated_monthly_waste", 0)
+    if total:
+        return float(total)
+    per_gap = impact_data.get("per_gap_impact", [])
+    if per_gap:
+        return sum(float(g.get("estimated_monthly_impact_inr", 0)) for g in per_gap)
+    return 0.0
 
 
 # ── SECTION 2: Competitor Intelligence ────────────────────────────────────────
@@ -415,12 +511,12 @@ def _section_competitor_intel(data: dict) -> list:
             ["Total Ads Analysed", str(len(analyses))],
             ["Top Triggers", ", ".join(
                 t.replace("_", " ").title() for t, _ in triggers.most_common(3))
-             or "—"],
+             or "\u2014"],
             ["Top Tones", ", ".join(
                 t.replace("_", " ").title() for t, _ in tones.most_common(2))
-             or "—"],
+             or "\u2014"],
             ["Formats", ", ".join(
-                f"{v} {k}" for k, v in formats.most_common()) or "—"],
+                f"{v} {k}" for k, v in formats.most_common()) or "\u2014"],
         ]
         t = Table(stats_data, colWidths=[45 * mm, _CONTENT_W - 45 * mm])
         t.setStyle(TableStyle([
@@ -439,11 +535,11 @@ def _section_competitor_intel(data: dict) -> list:
             detail_rows = [["Ad ID", "Trigger", "Tone", "Days", "Layout"]]
             for a in analyses[:5]:
                 detail_rows.append([
-                    _trunc(a.get("ad_library_id", "—"), 18),
-                    (a.get("psychological_trigger") or "—").replace("_", " "),
-                    (a.get("copy_tone") or "—"),
-                    str(a.get("duration_days", "—")),
-                    _trunc(a.get("visual_layout") or "—", 30),
+                    _trunc(a.get("ad_library_id", "\u2014"), 18),
+                    (a.get("psychological_trigger") or "\u2014").replace("_", " "),
+                    (a.get("copy_tone") or "\u2014"),
+                    str(a.get("duration_days", "\u2014")),
+                    _trunc(a.get("visual_layout") or "\u2014", 30),
                 ])
             story.append(_styled_table(
                 detail_rows,
@@ -496,12 +592,11 @@ def _section_concepts(data: dict) -> list:
 
 
 def _concept_card(num: int, concept: dict, accent) -> list:
-    """Render a single concept as a compact card."""
+    """Render a single concept as an expanded creative brief card."""
     elements = []
 
-    hook = concept.get("hook_text") or "—"
+    hook = concept.get("hook_text") or "\u2014"
     body = concept.get("body_script") or ""
-    visual = concept.get("visual_direction") or ""
     ctas_raw = concept.get("cta_variations_json") or "[]"
     if isinstance(ctas_raw, str):
         try:
@@ -517,17 +612,105 @@ def _concept_card(num: int, concept: dict, accent) -> list:
         f"&ldquo;{hook}&rdquo;",
         _s(f"ch{num}", fontSize=11, fontName="Helvetica-Bold", spaceAfter=2)))
 
-    # Body
+    # Hindi hook if available
+    hook_hindi = concept.get("hook_text_hindi", "")
+    if hook_hindi:
+        elements.append(Paragraph(
+            f"<b>Hindi:</b> &ldquo;{hook_hindi}&rdquo;",
+            _s(f"chh{num}", fontSize=9, textColor=_GREY, leading=12,
+               spaceAfter=2, leftIndent=4 * mm)))
+
+    # Badge row: format + production difficulty + estimated time
+    badge_parts = []
+    fmt = concept.get("format") or concept.get("creative_type") or ""
+    if fmt:
+        badge_parts.append(fmt.replace("_", " ").title())
+    prod_diff = concept.get("production_difficulty", "")
+    if prod_diff:
+        diff_color = _DIFF_COLORS.get(prod_diff.lower(), _GREY)
+        badge_parts.append(
+            f"<font color='{diff_color.hexval()}'><b>{prod_diff.title()}"
+            f" difficulty</b></font>")
+    est_time = concept.get("estimated_production_time", "")
+    if est_time:
+        badge_parts.append(f"~{est_time}")
+    if badge_parts:
+        elements.append(Paragraph(
+            " &bull; ".join(badge_parts),
+            _s(f"cbadge{num}", fontSize=8, textColor=_GREY, leading=11,
+               spaceAfter=2, leftIndent=4 * mm)))
+
+    # Text overlay
+    text_overlay = concept.get("text_overlay", "")
+    if text_overlay:
+        elements.append(Paragraph(
+            f"<b>Text overlay:</b> &ldquo;{text_overlay}&rdquo;",
+            _s(f"cto{num}", fontSize=9, leftIndent=4 * mm,
+               spaceAfter=2, leading=12)))
+
+    # Body script
     if body:
-        elements.append(Paragraph(body, _s(
+        # Strip data backing suffix if present
+        display_body = body
+        if "[DATA BACKING]" in display_body:
+            display_body = display_body[:display_body.index("[DATA BACKING]")].strip()
+        elements.append(Paragraph(display_body, _s(
             f"cb{num}", fontSize=9, textColor=_NAVY, leading=12,
             spaceAfter=2, leftIndent=4 * mm)))
 
-    # Visual direction
-    if visual:
+    # Visual direction — render full object if available
+    visual = concept.get("visual_direction") or ""
+    visual_json_raw = concept.get("visual_direction_json", "")
+    vis_obj = None
+    if visual_json_raw:
+        try:
+            vis_obj = json.loads(visual_json_raw) if isinstance(
+                visual_json_raw, str) else visual_json_raw
+        except (json.JSONDecodeError, TypeError):
+            pass
+    if not vis_obj and isinstance(visual, dict):
+        vis_obj = visual
+
+    if vis_obj and isinstance(vis_obj, dict):
+        vis_lines = []
+        for vk, vl in [
+            ("aspect_ratio", "Aspect ratio"),
+            ("scene_description", "Scene"),
+            ("talent_direction", "Talent"),
+            ("product_placement", "Product"),
+            ("lighting", "Lighting"),
+            ("text_overlay_position", "Text position"),
+            ("color_mood", "Color/mood"),
+        ]:
+            vv = vis_obj.get(vk, "")
+            if vv:
+                vis_lines.append(f"<b>{vl}:</b> {vv}")
+        if vis_lines:
+            elements.append(Paragraph(
+                "<b>Visual Direction:</b><br/>" + "<br/>".join(vis_lines),
+                _s(f"cv{num}", fontSize=8, textColor=_GREY, leading=11,
+                   spaceAfter=2, leftIndent=4 * mm)))
+    elif visual:
+        vis_text = visual if isinstance(visual, str) else str(visual)
         elements.append(Paragraph(
-            f"<b>Visual:</b> {_trunc(visual, 200)}",
+            f"<b>Visual:</b> {_trunc(vis_text, 200)}",
             _s(f"cv{num}", fontSize=8, textColor=_GREY, leading=11,
+               spaceAfter=2, leftIndent=4 * mm)))
+
+    # Sound design
+    sound = concept.get("sound_design", "")
+    if sound:
+        elements.append(Paragraph(
+            f"<b>Sound design:</b> {sound}",
+            _s(f"csd{num}", fontSize=8, textColor=_GREY, leading=11,
+               spaceAfter=2, leftIndent=4 * mm)))
+
+    # CTA placement
+    cta_placement = concept.get("cta_placement", "")
+    if cta_placement:
+        elements.append(Paragraph(
+            f"<b>CTA placement:</b> {cta_placement}",
+            _s(f"ccta{num}", fontSize=8, textColor=_GREY, leading=11,
                spaceAfter=2, leftIndent=4 * mm)))
 
     # CTAs
@@ -538,7 +721,72 @@ def _concept_card(num: int, concept: dict, accent) -> list:
             _s(f"cc{num}", fontSize=8, textColor=_GREY, leading=11,
                spaceAfter=2, leftIndent=4 * mm)))
 
-    elements.append(Spacer(1, 3 * mm))
+    # Carousel sequence (card-by-card breakdown)
+    carousel_raw = concept.get("carousel_sequence", None)
+    if carousel_raw:
+        if isinstance(carousel_raw, str):
+            try:
+                carousel_seq = json.loads(carousel_raw)
+            except (json.JSONDecodeError, TypeError):
+                carousel_seq = None
+        else:
+            carousel_seq = carousel_raw
+
+        if carousel_seq and isinstance(carousel_seq, list):
+            elements.append(Paragraph(
+                f"<b>Carousel Sequence ({len(carousel_seq)} cards):</b>",
+                _s(f"ccar_h{num}", fontSize=9, fontName="Helvetica-Bold",
+                   leftIndent=4 * mm, spaceAfter=2)))
+            for ci, card in enumerate(carousel_seq, 1):
+                if isinstance(card, dict):
+                    card_text = card.get("text", "") or card.get("headline", "")
+                    card_vis = card.get("visual", "") or card.get("image", "")
+                    card_line = f"Card {ci}: "
+                    if card_text:
+                        card_line += f"&ldquo;{_trunc(card_text, 60)}&rdquo;"
+                    if card_vis:
+                        card_line += f" \u2014 {_trunc(card_vis, 60)}"
+                    elements.append(Paragraph(
+                        card_line,
+                        _s(f"ccard{num}_{ci}", fontSize=8, textColor=_GREY,
+                           leading=11, leftIndent=8 * mm, spaceAfter=1)))
+                elif isinstance(card, str):
+                    elements.append(Paragraph(
+                        f"Card {ci}: {_trunc(card, 80)}",
+                        _s(f"ccard{num}_{ci}", fontSize=8, textColor=_GREY,
+                           leading=11, leftIndent=8 * mm, spaceAfter=1)))
+
+    # A/B test variable
+    ab_test = concept.get("ab_test_variable", "")
+    if ab_test:
+        elements.append(Paragraph(
+            f"<b>A/B test variable:</b> {ab_test}",
+            _s(f"cab{num}", fontSize=8, textColor=_GREY, leading=11,
+               spaceAfter=2, leftIndent=4 * mm)))
+
+    # Competitor inspiration
+    comp_ref = concept.get("competitor_inspiration", "")
+    if not comp_ref:
+        comp_ref = concept.get("competitor_reference", "")
+    if comp_ref:
+        elements.append(Paragraph(
+            f"<b>Inspired by:</b> {comp_ref}",
+            _s(f"cinsp{num}", fontSize=8, textColor=_GREY, leading=11,
+               spaceAfter=2, leftIndent=4 * mm)))
+
+    # Data backing
+    data_backing = concept.get("data_backing", "")
+    if not data_backing and "[DATA BACKING]" in body:
+        db_idx = body.index("[DATA BACKING]")
+        data_backing = body[db_idx + len("[DATA BACKING]"):].strip()
+    if data_backing:
+        elements.append(Paragraph(
+            f"<font color='{_TEAL.hexval()}'><b>Why this works:</b></font> "
+            f"{data_backing}",
+            _s(f"cwhy{num}", fontSize=8, leading=11,
+               leftIndent=4 * mm, spaceAfter=2)))
+
+    elements.append(Spacer(1, 4 * mm))
     return elements
 
 
@@ -555,7 +803,8 @@ def _section_calendar(data: dict) -> list:
     story.append(Paragraph(
         "Deploy concepts in this order to maximise angle diversity and "
         "prevent creative fatigue. Each week introduces fresh psychological "
-        "triggers and formats.",
+        "triggers and formats. Production difficulty is shown so your team "
+        "knows which concepts are quick wins vs full production days.",
         S_BODY))
     story.append(Spacer(1, 4 * mm))
 
@@ -600,21 +849,22 @@ def _section_calendar(data: dict) -> list:
             break
 
         story.append(Paragraph(
-            f"Week {week + 1}: {week_start.strftime('%d %b')} — "
+            f"Week {week + 1}: {week_start.strftime('%d %b')} \u2014 "
             f"{week_end.strftime('%d %b %Y')}",
             S_H3))
 
-        rows = [["Day", "Hook", "Angle", "Format"]]
+        rows = [["Day", "Hook", "Angle", "Difficulty"]]
         days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
         for i, c in enumerate(week_concepts):
             day_label = days[i] if i < len(days) else f"D{i + 1}"
+            diff = c.get("production_difficulty", "\u2014")
+            if diff and diff != "\u2014":
+                diff = diff.title()
             rows.append([
                 day_label,
-                _trunc(c.get("hook_text") or "—", 40),
-                (c.get("psychological_angle") or "—").replace("_", " "),
-                (c.get("visual_direction") or "—")[:15]
-                if not c.get("creative_type")
-                else (c.get("creative_type") or "—"),
+                _trunc(c.get("hook_text") or "\u2014", 40),
+                (c.get("psychological_angle") or "\u2014").replace("_", " "),
+                diff,
             ])
 
         story.append(_styled_table(
@@ -670,10 +920,26 @@ def _styled_table(rows: list, col_widths: list) -> Table:
     return t
 
 
+def _callout_box(html_text: str) -> Table:
+    """Teal-bordered callout box."""
+    p = Paragraph(html_text, _s("callout_sp", fontSize=10, textColor=_NAVY,
+                                 leading=13, spaceAfter=4))
+    t = Table([[p]], colWidths=[_CONTENT_W - 4 * mm])
+    t.setStyle(TableStyle([
+        ("BACKGROUND",    (0, 0), (-1, -1), _LIGHT_TEAL),
+        ("LINEBEFORECOL", (0, 0), (0, -1), 3, _TEAL),
+        ("TOPPADDING",    (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 10),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), 10),
+    ]))
+    return t
+
+
 def _trunc(text: str, maxlen: int) -> str:
     if len(text) <= maxlen:
         return text
-    return text[:maxlen - 1] + "…"
+    return text[:maxlen - 1] + "\u2026"
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────

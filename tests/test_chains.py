@@ -112,6 +112,16 @@ class TestConceptGenerationPrompt:
             brand_context=json.dumps({"name": "TestBrand"}),
             competitor_intel=json.dumps([]),
             waste_diagnosis=json.dumps({}),
+            hook_database=json.dumps({}),
+            gap_analysis=json.dumps([]),
+            winning_patterns=json.dumps([]),
+            visual_patterns=json.dumps({}),
+            brand_products=json.dumps([]),
+            brand_prices=json.dumps([]),
+            brand_ingredients=json.dumps([]),
+            brand_language_profile=json.dumps({}),
+            competitor_winners=json.dumps([]),
+            gap_impact_ranking=json.dumps([]),
         )
         assert "TestBrand" in result
         assert "50" in result
@@ -119,9 +129,28 @@ class TestConceptGenerationPrompt:
     def test_required_concept_fields(self, template):
         """Prompt should specify expected concept output fields."""
         text = template.template
-        expected = ["hook", "body_script", "visual_direction", "psychological_angle"]
+        expected = [
+            "hook_text", "body_script", "visual_direction",
+            "psychological_angle", "hook_text_hindi", "text_overlay",
+            "sound_design", "cta_placement", "carousel_sequence",
+            "ab_test_variable", "competitor_inspiration",
+            "production_difficulty", "estimated_production_time",
+        ]
         for field in expected:
             assert field in text, f"Missing field '{field}' in concept generation prompt"
+
+    def test_visual_direction_is_object(self, template):
+        """visual_direction must be specified as an object with sub-fields."""
+        text = template.template
+        vd_subfields = [
+            "aspect_ratio", "scene_description", "talent_direction",
+            "product_placement", "lighting", "text_overlay_position",
+            "color_mood",
+        ]
+        for field in vd_subfields:
+            assert field in text, (
+                f"Missing visual_direction sub-field '{field}' in prompt"
+            )
 
     def test_diversity_enforcement(self, template):
         """Prompt should mention diversity constraints."""
@@ -132,6 +161,27 @@ class TestConceptGenerationPrompt:
     def test_num_concepts_variable(self, template):
         """Should use $num_concepts variable."""
         assert "$num_concepts" in template.template
+
+    def test_new_template_variables(self, template):
+        """Prompt must contain the new data-section template variables."""
+        text = template.template
+        required_vars = [
+            "$brand_products",
+            "$brand_prices",
+            "$brand_ingredients",
+            "$brand_language_profile",
+            "$competitor_winners",
+            "$gap_impact_ranking",
+        ]
+        for var in required_vars:
+            assert var in text, f"Missing template variable '{var}' in prompt"
+
+    def test_product_specificity_rules(self, template):
+        """Prompt should enforce product-specific hooks and ingredient references."""
+        text = template.template
+        assert "BRAND PRODUCT DATA" in text
+        assert "BRAND KEY INGREDIENTS" in text
+        assert "BRAND PRICE POINTS" in text
 
 
 class TestLoadPromptHelper:

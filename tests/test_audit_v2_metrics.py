@@ -250,24 +250,24 @@ class TestBuildHookDatabase:
         hooks = result["transformation"]["hooks"]
         assert hooks[0]["duration_days"] >= hooks[1]["duration_days"]
 
-    def test_hooks_capped_at_5(self):
-        """Even with many hooks per trigger, only 5 should be returned."""
+    def test_hooks_capped_at_8(self):
+        """Even with many hooks per trigger, only 8 should be returned."""
         brand_rows = [{"id": 1, "name": "Brand", "is_client": 0}]
         all_ads = [
             {"id": i, "brand_id": 1, "ad_library_id": f"AD{i}",
              "ad_copy": f"Hook text {i}\nBody", "duration_days": i * 5,
              "transcript": None, "is_active": 1}
-            for i in range(1, 9)
+            for i in range(1, 12)
         ]
-        profitable_ads = [{"id": i} for i in range(1, 9)]
+        profitable_ads = [{"id": i} for i in range(1, 12)]
         all_analyses = [
             {"ad_id": i, "psychological_trigger": "transformation"}
-            for i in range(1, 9)
+            for i in range(1, 12)
         ]
 
         result = _build_hook_database(all_analyses, all_ads, profitable_ads, brand_rows)
-        assert len(result["transformation"]["hooks"]) == 5
-        assert result["transformation"]["count"] == 8
+        assert len(result["transformation"]["hooks"]) == 8
+        assert result["transformation"]["count"] == 11
 
     def test_spoken_hook_extracted(self):
         all_analyses, all_ads, profitable_ads, brand_rows = self._make_data()

@@ -105,6 +105,10 @@ VALID_CREATIVE_TYPES: list[str] = ["static", "carousel", "video", "reel"]
 CREATIVE_COVERAGE_BENCHMARK: int = 15  # Meta Andromeda demands 15-20+ variations
 REFRESH_BENCHMARK_DAYS: int = 10       # Optimal refresh window in days
 
+# Impact estimator
+ESTIMATED_DAILY_SPEND_PER_AD: int = 750   # ₹/day/ad — conservative D2C skincare benchmark (₹1-50Cr band)
+SPRINT_PRICE_INR: int = 8000              # Sprint deliverable price in ₹
+
 # Set FORCE_REANALYZE=1 to skip the analysis cache and re-analyze all ads.
 FORCE_REANALYZE: bool = os.getenv("FORCE_REANALYZE", "0") == "1"
 
@@ -182,6 +186,8 @@ def _migrate_creative_concepts_table() -> None:
         "trust_stack_json": "TEXT",
         "format_spec": "TEXT",
         "thumb_stop_score": "INTEGER",
+        "visual_direction_json": "TEXT",
+        "brief_json": "TEXT",
     }
     with get_connection() as conn:
         existing = {

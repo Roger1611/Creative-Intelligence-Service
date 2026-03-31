@@ -196,9 +196,12 @@ AUDIT_STEPS = [
     "Profitability filter",
     "Fatigue scoring",
     "Category intelligence",
+    "Brand product intelligence",
+    "Competitor deep dive",
     "Competitor analysis (LLM)",
     "Waste diagnosis (LLM)",
-    "Generate sample hooks (LLM)",
+    "Spend impact estimation",
+    "Generate sample briefs (LLM)",
     "Build audit PDF",
 ]
 
@@ -243,7 +246,8 @@ def _run_audit(
         # Lazy imports so startup stays fast
         from scrapers import apify_scraper, instagram_profile, brand_website
         from analysis import structurer, profitability_filter, fatigue_scorer
-        from analysis import category_intel
+        from analysis import category_intel, brand_intel, competitor_deep_dive
+        from analysis import impact_estimator
         from llm import chains
         from deliverables import audit_generator
 
@@ -293,22 +297,37 @@ def _run_audit(
         category_intel.run(brand_name, competitors)
         progress.update(1)
 
-        # 8. Competitor analysis (LLM)
+        # 8. Brand product intelligence
+        progress.set_postfix_str("brand intel")
+        brand_intel.run(brand_name)
+        progress.update(1)
+
+        # 9. Competitor deep dive
+        progress.set_postfix_str("competitor deep dive")
+        competitor_deep_dive.run(brand_name, competitors)
+        progress.update(1)
+
+        # 10. Competitor analysis (LLM)
         progress.set_postfix_str("LLM: competitor analysis")
         chains.chain_competitor_analysis(brand_name)
         progress.update(1)
 
-        # 9. Waste diagnosis (LLM)
+        # 11. Waste diagnosis (LLM)
         progress.set_postfix_str("LLM: waste diagnosis")
         chains.chain_waste_diagnosis(brand_name)
         progress.update(1)
 
-        # 10. Generate 5 sample hooks (LLM)
-        progress.set_postfix_str("LLM: sample hooks")
+        # 12. Spend impact estimation
+        progress.set_postfix_str("impact estimation")
+        impact_estimator.run(brand_name, competitors)
+        progress.update(1)
+
+        # 13. Generate 5 sample briefs (LLM)
+        progress.set_postfix_str("LLM: sample briefs")
         chains.chain_concept_generation(brand_name, num_concepts=5)
         progress.update(1)
 
-        # 11. Build audit PDF
+        # 14. Build audit PDF
         progress.set_postfix_str("building PDF")
         pdf_path = audit_generator.run(brand_name, output_dir=output)
         progress.update(1)
@@ -365,11 +384,12 @@ def _run_sprint(
     try:
         from scrapers import apify_scraper, instagram_profile, brand_website
         from analysis import structurer, profitability_filter, fatigue_scorer
-        from analysis import category_intel
+        from analysis import category_intel, brand_intel, competitor_deep_dive
+        from analysis import impact_estimator
         from llm import chains
         from deliverables import audit_generator, sprint_generator
 
-        # Steps 1–9: same as audit
+        # Steps 1–14: same as audit
         raw = apify_scraper.run(
             brand_name=brand_name,
             brand_url=brand_url,
@@ -402,26 +422,35 @@ def _run_sprint(
         category_intel.run(brand_name, competitors)
         progress.update(1)
 
+        brand_intel.run(brand_name)
+        progress.update(1)
+
+        competitor_deep_dive.run(brand_name, competitors)
+        progress.update(1)
+
         chains.chain_competitor_analysis(brand_name)
         progress.update(1)
 
         chains.chain_waste_diagnosis(brand_name)
         progress.update(1)
 
-        # 10. Sample hooks (still generated for audit PDF side)
+        impact_estimator.run(brand_name, competitors)
+        progress.update(1)
+
+        # 13. Sample briefs (still generated for audit PDF side)
         chains.chain_concept_generation(brand_name, num_concepts=5)
         progress.update(1)
 
-        # 11. Build audit PDF (included even in sprint for reference)
+        # 14. Build audit PDF (included even in sprint for reference)
         audit_generator.run(brand_name, output_dir=output)
         progress.update(1)
 
-        # 12. Full concept generation (LLM)
+        # 15. Full concept generation (LLM)
         progress.set_postfix_str(f"LLM: {num_concepts} concepts")
         chains.chain_concept_generation(brand_name, num_concepts=num_concepts)
         progress.update(1)
 
-        # 13. Build sprint deliverable
+        # 16. Build sprint deliverable
         progress.set_postfix_str("building sprint PDF")
         pdf_path = sprint_generator.run(brand_name, output_dir=output)
         progress.update(1)
@@ -568,9 +597,12 @@ def _run_refresh(
         "Re-scrape Instagram",
         "Re-ingest & structure",
         "Re-run analysis pipeline",
+        "Brand product intelligence",
+        "Competitor deep dive",
         "Competitor analysis (LLM)",
         "Waste diagnosis (LLM)",
-        "Generate new concepts (LLM)",
+        "Spend impact estimation",
+        "Generate new briefs (LLM)",
         "Diff report",
     ]
 
@@ -583,7 +615,8 @@ def _run_refresh(
     try:
         from scrapers import apify_scraper, instagram_profile
         from analysis import structurer, profitability_filter, fatigue_scorer
-        from analysis import category_intel
+        from analysis import category_intel, brand_intel, competitor_deep_dive
+        from analysis import impact_estimator
         from llm import chains
 
         # 1. Re-scrape via Apify
@@ -619,22 +652,37 @@ def _run_refresh(
         category_intel.run(brand_name, competitors)
         progress.update(1)
 
-        # 5. Competitor analysis (LLM)
+        # 5. Brand product intelligence
+        progress.set_postfix_str("brand intel")
+        brand_intel.run(brand_name)
+        progress.update(1)
+
+        # 6. Competitor deep dive
+        progress.set_postfix_str("competitor deep dive")
+        competitor_deep_dive.run(brand_name, competitors)
+        progress.update(1)
+
+        # 7. Competitor analysis (LLM)
         progress.set_postfix_str("LLM: competitors")
         chains.chain_competitor_analysis(brand_name)
         progress.update(1)
 
-        # 6. Waste diagnosis (LLM)
+        # 8. Waste diagnosis (LLM)
         progress.set_postfix_str("LLM: waste")
         chains.chain_waste_diagnosis(brand_name)
         progress.update(1)
 
-        # 7. New concepts (LLM)
-        progress.set_postfix_str("LLM: concepts")
+        # 9. Spend impact estimation
+        progress.set_postfix_str("impact estimation")
+        impact_estimator.run(brand_name, competitors)
+        progress.update(1)
+
+        # 10. New briefs (LLM)
+        progress.set_postfix_str("LLM: briefs")
         chains.chain_concept_generation(brand_name, num_concepts=10)
         progress.update(1)
 
-        # 8. Diff report
+        # 11. Diff report
         progress.set_postfix_str("diffing")
         _log_refresh_diff(brand_name, brand_id, prev_ad_count, prev_comp_ads,
                           competitors)

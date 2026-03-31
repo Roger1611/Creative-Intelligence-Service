@@ -1,7 +1,7 @@
-"""Tests for analysis/category_intel.py — hook structure analysis."""
+"""Tests for analysis/category_intel.py — hook structure analysis + hook database validation."""
 
 import pytest
-from analysis.category_intel import _hook_structure_analysis
+from analysis.category_intel import _hook_structure_analysis, _build_hook_database, _is_valid_hook
 
 
 class TestHookStructureAnalysis:
@@ -105,3 +105,112 @@ class TestHookStructureAnalysis:
         assert "bold_claim" not in result["underused_hooks"]
         # But hooks never seen are still underused
         assert "urgency_lead" in result["underused_hooks"]
+
+
+class TestIsValidHook:
+    """Test the _is_valid_hook validation function."""
+
+    def test_template_variable_rejected(self):
+        """Hooks containing {{product.brand}} should be excluded."""
+        assert _is_valid_hook("{{product.brand}} loves you") is False
+        assert _is_valid_hook("Buy {{product.name}} now") is False
+        assert _is_valid_hook("{{product.brand}}") is False
+
+    def test_jinja_block_rejected(self):
+        """Hooks containing {%...%} should be excluded."""
+        assert _is_valid_hook("{% if sale %}Big Sale{% endif %}") is False
+
+    def test_short_hooks_rejected(self):
+        """Hooks shorter than 5 chars after stripping should be excluded."""
+        assert _is_valid_hook("Hi") is False
+        assert _is_valid_hook("    ") is False
+        assert _is_valid_hook("ab") is False
+
+    def test_url_only_rejected(self):
+        """URL-only hooks should be excluded."""
+        assert _is_valid_hook("https://example.com/sale") is False
+        assert _is_valid_hook("http://shop.brand.com") is False
+
+    def test_valid_hooks_accepted(self):
+        """Normal hooks should pass validation."""
+        assert _is_valid_hook("Stop scrolling — your skin deserves better") is True
+        assert _is_valid_hook("5 reasons to switch to natural skincare") is True
+        assert _is_valid_hook("Did you know your moisturizer is lying?") is True
+
+
+class TestBuildHookDatabase:
+    """Test _build_hook_database with template variable filtering."""
+
+    def _make_data(self, ad_copies):
+        """Helper to create analyses/ads/profitable/brands from ad copy list."""
+        analyses = []
+        ads = []
+        for i, copy in enumerate(ad_copies, start=1):
+            analyses.append({
+                "ad_id": i,
+                "psychological_trigger": "status",
+            })
+            ads.append({
+                "id": i,
+                "ad_copy": copy,
+                "brand_id": 100,
+                "ad_library_id": f"lib_{i}",
+                "duration_days": 30,
+                "transcript": None,
+            })
+        profitable_ads = list(ads)  # all profitable
+        brand_rows = [{"id": 100, "name": "TestBrand"}]
+        return analyses, ads, profitable_ads, brand_rows
+
+    def test_template_vars_excluded_from_hooks(self):
+        """Hooks with {{product.brand}} must not appear in the database."""
+        analyses, ads, profitable, brands = self._make_data([
+            "{{product.brand}} is amazing",
+            "Your skin deserves the best care possible",
+        ])
+        result = _build_hook_database(analyses, ads, profitable, brands)
+        all_hook_texts = [
+            h["text"]
+            for trigger_data in result.values()
+            for h in trigger_data["hooks"]
+        ]
+        assert "{{product.brand}} is amazing" not in all_hook_texts
+        assert any("Your skin" in t for t in all_hook_texts)
+
+    def test_short_hooks_excluded(self):
+        """Hooks shorter than 5 chars must be excluded."""
+        analyses, ads, profitable, brands = self._make_data([
+            "Hey",
+            "Transform your skincare routine today",
+        ])
+        result = _build_hook_database(analyses, ads, profitable, brands)
+        all_hook_texts = [
+            h["text"]
+            for trigger_data in result.values()
+            for h in trigger_data["hooks"]
+        ]
+        assert "Hey" not in all_hook_texts
+
+    def test_url_hooks_excluded(self):
+        """URL-only hooks must be excluded."""
+        analyses, ads, profitable, brands = self._make_data([
+            "https://example.com/shop",
+            "Stop wasting money on creams that don't work",
+        ])
+        result = _build_hook_database(analyses, ads, profitable, brands)
+        all_hook_texts = [
+            h["text"]
+            for trigger_data in result.values()
+            for h in trigger_data["hooks"]
+        ]
+        assert "https://example.com/shop" not in all_hook_texts
+
+    def test_hook_structure_field_present(self):
+        """Each hook dict should have a hook_structure field."""
+        analyses, ads, profitable, brands = self._make_data([
+            "Did you know your moisturizer is lying to you?",
+        ])
+        result = _build_hook_database(analyses, ads, profitable, brands)
+        for trigger_data in result.values():
+            for hook in trigger_data["hooks"]:
+                assert "hook_structure" in hook

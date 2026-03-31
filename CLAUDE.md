@@ -43,6 +43,9 @@ config.py         → Central config, loads .env, initializes DB on first run
 | analysis/structurer.py | ✅ Done | ingest() for DB write; run() for dedup + diversity score + processed JSON |
 | analysis/profitability_filter.py | ✅ Done | Flags ad_analysis.is_profitable; ranked winner list; cross-competitor patterns |
 | analysis/fatigue_scorer.py | ✅ Done | 5-component fatigue score (0–100); competitor benchmarking; waste_reports table |
+| analysis/brand_intel.py | ✅ Done | Product names, prices, ingredients, USPs, language profile, brand voice from ad copy + website; CLI --brand |
+| analysis/competitor_deep_dive.py | ✅ Done | Per-competitor profiles, top-5 winner dissections, why_it_works explanations, creative velocity, competitive landscape summary; CLI --brand --competitors |
+| analysis/impact_estimator.py | ✅ Done | ₹ impact per gap: fatigue waste, angle/format gap opportunity cost, refresh cycle waste, sprint ROI; CLI --brand --competitors --daily-spend |
 | analysis/category_intel.py | ✅ Done | Trigger win rates; format over-performance; underused angles; patterns + opportunities |
 | llm/client.py | ✅ Done | OpenRouter via openai SDK; task→model routing (MODEL_MAP); multimodal vision; retries + fallback; cost logging |
 | llm/prompts/*.txt | ✅ Done | competitor_deconstruction, waste_diagnosis, concept_generation |
@@ -51,8 +54,8 @@ config.py         → Central config, loads .env, initializes DB on first run
 | deliverables/sprint_generator.py | ✅ Done | Full sprint PDF+JSON: exec summary, competitor intel, 50+ concepts by angle, creative calendar; CLI --brand --batch --output |
 | feedback/performance_parser.py | ✅ Done | Meta CSV parser; 3-strategy ad matching; fuzzy concept linking; CLI --file --brand |
 | feedback/loop.py | ✅ Done | Angle/hook/format analysis; winning patterns text; ROAS-weighted next-batch weights; CLI --category/--brand |
-| pipeline.py | ✅ Done | audit, sprint, batch-audit, refresh modes; --dry-run; tqdm progress; RunTracker summary |
-| tests/ | ✅ Done | 154 tests: structurer, fatigue scorer, profitability, prompts, entity diversity, audit PDF generation, gap analysis |
+| pipeline.py | ✅ Done | audit (14 steps), sprint (16 steps), batch-audit, refresh (11 steps) modes; brand_intel + competitor_deep_dive + impact_estimator integrated; --dry-run; tqdm progress; RunTracker summary |
+| tests/ | ✅ Done | 230 tests: structurer, fatigue scorer, profitability, prompts, entity diversity, audit PDF generation, gap analysis, brand intel, competitor deep dive, impact estimator |
 
 ## Commands
 
@@ -215,4 +218,37 @@ Upgraded from 3-page PDF to 9-page intelligence-grade audit. Every number comes 
 - `chain_concept_generation()` now passes `hook_database`, `gap_analysis`, `winning_patterns`, `visual_patterns` to prompt
 - Prompt requires `data_backing` field (replaces `competitor_reference`) citing real numbers
 - `_save_concepts()` appends `[DATA BACKING]` to body_script for downstream use
-- 154 tests pass
+
+## Production-Ready Creative Briefs (2026-03-30)
+
+Rewrote concept_generation prompt and chain to produce designer-executable creative briefs instead of generic concepts.
+
+### New data sources loaded in chain_concept_generation()
+- `{slug}_brand_intel.json` → products_detected, price_points, key_ingredients, language_profile
+- `{slug}_competitor_deep_dive.json` → top 3 winners per competitor with full hook text + why_it_works
+- `{slug}_impact_estimate.json` → per_gap_impact sorted by estimated_monthly_impact_inr desc
+
+### New prompt template variables
+- `$brand_products`, `$brand_prices`, `$brand_ingredients`, `$brand_language_profile`
+- `$competitor_winners`, `$gap_impact_ranking`
+
+### Expanded creative brief schema (concept_generation.txt)
+- `hook_text` replaces `hook` — must mention specific product by name
+- `hook_text_hindi` — Hindi translation if brand uses Hindi
+- `text_overlay` — max 7 words, problem/claim only
+- `visual_direction` — now an OBJECT with: aspect_ratio, scene_description, talent_direction, product_placement, lighting, text_overlay_position, color_mood
+- `sound_design`, `cta_placement`, `carousel_sequence` (array for carousel, null otherwise)
+- `ab_test_variable`, `competitor_inspiration`, `production_difficulty`, `estimated_production_time`
+- `data_backing` must cite real numbers from competitor data
+
+### DB changes
+- `creative_concepts` table: added `visual_direction_json TEXT`, `brief_json TEXT` columns
+- `_save_concepts()` stores full brief as JSON in `brief_json`, serialized visual_direction object in `visual_direction_json`
+- `_validate_entity_diversity()` updated to extract keywords from visual_direction object sub-fields
+
+### Pipeline integration (pipeline.py)
+- `brand_intel.run()` called after category_intel, before competitor LLM analysis
+- `competitor_deep_dive.run()` called after brand_intel, before competitor LLM analysis
+- `impact_estimator.run()` called after waste diagnosis LLM, before concept generation
+- Audit: 14 steps (was 11). Sprint: 16 steps (was 13). Refresh: 11 steps (was 8).
+- All three modes import from `analysis.brand_intel`, `analysis.competitor_deep_dive`, `analysis.impact_estimator`
